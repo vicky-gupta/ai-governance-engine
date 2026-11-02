@@ -10,21 +10,41 @@ import (
 	"time"
 
 	"github.com/vicky-gupta/ai-governance-engine/internal/config"
+	"github.com/vicky-gupta/ai-governance-engine/internal/db"
 	"github.com/vicky-gupta/ai-governance-engine/internal/proxy"
 	"github.com/vicky-gupta/ai-governance-engine/internal/server"
 )
 
 func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-
-	cfg, err := config.Load()
-	if err != nil {
-		log.Error("invalid config", "error", err)
+	if err := run(log); err != nil {
+		log.Error("gateway stopped", "error", err)
 		os.Exit(1)
 	}
+}
+
+func run(log *slog.Logger) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	pool, err := db.Open(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
+	if err := db.Migrate(ctx, pool); err != nil {
+		return err
+	}
+	log.Info("database ready")
+
 	dbAddr, _ := cfg.DatabaseHostPort()
 	upstream, _ := cfg.Upstream()
-
 	p := proxy.New(upstream, cfg.UpstreamAPIKey, log)
 
 	srv := &http.Server{
@@ -33,21 +53,22 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	// Stop cleanly on Ctrl+C.
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
-
+	errCh := make(chan error, 1)
 	go func() {
 		log.Info("gateway starting", "addr", cfg.Addr, "upstream", upstream.String())
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Error("server failed", "error", err)
-			os.Exit(1)
+			errCh <- err
 		}
 	}()
 
-	<-ctx.Done()
+	select {
+	case err := <-errCh:
+		return err
+	case <-ctx.Done():
+	}
+
 	log.Info("shutting down")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	srv.Shutdown(shutdownCtx)
+	return srv.Shutdown(shutdownCtx)
 }
