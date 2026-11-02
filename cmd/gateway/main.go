@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/vicky-gupta/ai-governance-engine/internal/config"
+	"github.com/vicky-gupta/ai-governance-engine/internal/proxy"
 	"github.com/vicky-gupta/ai-governance-engine/internal/server"
 )
 
@@ -22,10 +23,13 @@ func main() {
 		os.Exit(1)
 	}
 	dbAddr, _ := cfg.DatabaseHostPort()
+	upstream, _ := cfg.Upstream()
+
+	p := proxy.New(upstream, cfg.UpstreamAPIKey, log)
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           server.New(log, dbAddr).Handler(),
+		Handler:           server.New(log, dbAddr, p).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -34,7 +38,7 @@ func main() {
 	defer stop()
 
 	go func() {
-		log.Info("gateway starting", "addr", cfg.Addr)
+		log.Info("gateway starting", "addr", cfg.Addr, "upstream", upstream.String())
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Error("server failed", "error", err)
 			os.Exit(1)
