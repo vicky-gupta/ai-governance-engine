@@ -9,9 +9,12 @@ import (
 	"os/signal"
 	"time"
 
+	"github.com/vicky-gupta/ai-governance-engine/internal/admin"
+	"github.com/vicky-gupta/ai-governance-engine/internal/auth"
 	"github.com/vicky-gupta/ai-governance-engine/internal/config"
 	"github.com/vicky-gupta/ai-governance-engine/internal/db"
 	"github.com/vicky-gupta/ai-governance-engine/internal/proxy"
+	"github.com/vicky-gupta/ai-governance-engine/internal/registry"
 	"github.com/vicky-gupta/ai-governance-engine/internal/server"
 )
 
@@ -43,13 +46,18 @@ func run(log *slog.Logger) error {
 	}
 	log.Info("database ready")
 
-	dbAddr, _ := cfg.DatabaseHostPort()
+	store := registry.NewStore(pool)
 	upstream, _ := cfg.Upstream()
 	p := proxy.New(upstream, cfg.UpstreamAPIKey, log)
 
 	srv := &http.Server{
-		Addr:              cfg.Addr,
-		Handler:           server.New(log, dbAddr, p).Handler(),
+		Addr: cfg.Addr,
+		Handler: server.New(server.Deps{
+			Log:   log,
+			DB:    pool,
+			Proxy: auth.Middleware(store, log)(p),
+			Admin: admin.New(store, cfg.AdminToken, log),
+		}).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

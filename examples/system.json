@@ -1,0 +1,6 @@
+{
+  "name": "support-bot",
+  "owner": "customer-service",
+  "purpose": "Answers customer questions about accounts",
+  "risk_tier": "limited"
+}

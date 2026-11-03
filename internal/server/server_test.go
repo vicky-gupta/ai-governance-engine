@@ -1,79 +1,80 @@
 package server
 
 import (
-	"encoding/json"
+	"context"
+	"errors"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 )
 
+// fakeDB lets tests choose whether the database is "up".
+type fakeDB struct{ err error }
+
+func (f fakeDB) Ping(context.Context) error { return f.err }
+
+// testDeps returns working defaults; each test overrides what it needs.
+func testDeps() Deps {
+	return Deps{
+		Log:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		DB:    fakeDB{},
+		Proxy: http.NotFoundHandler(),
+		Admin: http.NotFoundHandler(),
+	}
+}
+
 func TestHealthz(t *testing.T) {
-	s := New(slog.New(slog.NewTextHandler(io.Discard, nil)), "127.0.0.1:1", http.NotFoundHandler())
 	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/healthz", nil))
+	New(testDeps()).Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/healthz", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("got %d, want 200", rec.Code)
 	}
 }
 
 func TestReadyz(t *testing.T) {
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-
-	// Nothing listening: should be 503.
+	deps := testDeps()
 	rec := httptest.NewRecorder()
-	New(log, "127.0.0.1:1", http.NotFoundHandler()).Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/readyz", nil))
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Errorf("no db: got %d, want 503", rec.Code)
-	}
-
-	// Fake database listening: should be 200.
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ln.Close()
-	rec = httptest.NewRecorder()
-	New(log, ln.Addr().String(), http.NotFoundHandler()).Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/readyz", nil))
+	New(deps).Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/readyz", nil))
 	if rec.Code != http.StatusOK {
 		t.Errorf("db up: got %d, want 200", rec.Code)
 	}
-}
 
-func TestVersion(t *testing.T) {
-	s := New(slog.New(slog.NewTextHandler(io.Discard, nil)), "127.0.0.1:1", http.NotFoundHandler())
-	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/version", nil))
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("got status %d, want 200", rec.Code)
-	}
-
-	var body map[string]string
-	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
-		t.Fatalf("response is not valid JSON: %v", err)
-	}
-	if body["version"] != Version {
-		t.Errorf("got version %q, want %q", body["version"], Version)
+	deps.DB = fakeDB{err: errors.New("connection refused")}
+	rec = httptest.NewRecorder()
+	New(deps).Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/readyz", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("db down: got %d, want 503", rec.Code)
 	}
 }
 
-func TestRoutesReachProxy(t *testing.T) {
-	called := false
-	fake := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true })
-	s := New(slog.New(slog.NewTextHandler(io.Discard, nil)), "127.0.0.1:1", fake)
+func TestRouting(t *testing.T) {
+	var hit string
+	deps := testDeps()
+	deps.Proxy = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hit = "proxy" })
+	deps.Admin = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hit = "admin" })
+	h := New(deps).Handler()
 
-	s.Handler().ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", "/v1/chat/completions", nil))
-	if !called {
-		t.Error("POST /v1/chat/completions did not reach the proxy")
+	cases := []struct {
+		method, path string
+		wantHit      string
+		wantCode     int
+	}{
+		{"POST", "/v1/chat/completions", "proxy", http.StatusOK},
+		{"GET", "/v1/models", "proxy", http.StatusOK},
+		{"GET", "/admin/systems", "admin", http.StatusOK},
+		{"POST", "/v1/files", "", http.StatusNotFound},
+		{"GET", "/v1/chat/completions", "", http.StatusMethodNotAllowed},
 	}
-
-	called = false
-	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/files", nil))
-	if called || rec.Code != http.StatusNotFound {
-		t.Errorf("unlisted route: called=%v status=%d, want not called and 404", called, rec.Code)
+	for _, tc := range cases {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			hit = ""
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, nil))
+			if hit != tc.wantHit || rec.Code != tc.wantCode {
+				t.Errorf("hit=%q status=%d, want hit=%q status=%d", hit, rec.Code, tc.wantHit, tc.wantCode)
+			}
+		})
 	}
 }

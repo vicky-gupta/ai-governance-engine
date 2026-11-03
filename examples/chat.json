@@ -2,6 +2,6 @@
   "model": "openai/gpt-oss-120b",
   "max_tokens": 300,
   "messages": [
-    { "role": "user", "content": "Tell me a joke in hindi" }
+    { "role": "user", "content": "Tell me 5 fruits name" }
   ]
 }

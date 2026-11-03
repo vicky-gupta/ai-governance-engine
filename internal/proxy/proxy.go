@@ -2,11 +2,12 @@
 package proxy
 
 import (
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+
+	"github.com/vicky-gupta/ai-governance-engine/internal/apierr"
 )
 
 // New returns a handler that forwards requests to target, replacing the
@@ -31,14 +32,7 @@ func New(target *url.URL, apiKey string, log *slog.Logger) http.Handler {
 		// client SDKs can parse it.
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			log.Error("upstream request failed", "path", r.URL.Path, "error", err)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadGateway)
-			json.NewEncoder(w).Encode(map[string]any{
-				"error": map[string]string{
-					"message": "upstream provider unreachable",
-					"type":    "gateway_error",
-				},
-			})
+			apierr.Write(w, http.StatusBadGateway, "gateway_error", "upstream provider unreachable")
 		},
 	}
 }
