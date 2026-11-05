@@ -2,6 +2,10 @@ package pipeline
 
 import (
 	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -9,16 +13,23 @@ import (
 	"strconv"
 
 	"github.com/vicky-gupta/ai-governance-engine/internal/apierr"
+	"github.com/vicky-gupta/ai-governance-engine/internal/audit"
 	"github.com/vicky-gupta/ai-governance-engine/internal/auth"
 )
+
+// Recorder writes audit entries. audit.Store implements it; tests use a fake.
+type Recorder interface {
+	Record(ctx context.Context, e audit.Entry) error
+}
 
 // maxBodyBytes limits request size. Chat requests with long histories can
 // be large, but 10 MB is far beyond any normal one.
 const maxBodyBytes = 10 << 20
 
 // Middleware runs the pipeline on every chat request before it reaches
-// the proxy. It must sit after the auth middleware.
-func Middleware(p *Pipeline, log *slog.Logger) func(http.Handler) http.Handler {
+// the proxy, and records every decision in the audit log. It must sit
+// after the auth middleware.
+func Middleware(p *Pipeline, rec Recorder, log *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			sys, ok := auth.SystemFrom(r.Context())
@@ -48,14 +59,53 @@ func Middleware(p *Pipeline, log *slog.Logger) func(http.Handler) http.Handler {
 			req.System = sys
 
 			res := p.Run(r.Context(), req)
+			requestID := newRequestID()
+			w.Header().Set("X-Request-ID", requestID)
+			w.Header().Set("X-Aigov-Decision", string(res.Action))
 			log.Info("decision",
+				"request_id", requestID,
 				"ai_system", sys.Name,
 				"action", res.Action,
 				"check", res.Check,
 				"reason", res.Reason,
 				"trace", res.Trace,
 			)
-			w.Header().Set("X-Aigov-Decision", string(res.Action))
+
+			// What gets forwarded: the original bytes, or the modified request.
+			forward := body
+			if res.Action == Modify {
+				forward, err = req.Encode()
+				if err != nil {
+					log.Error("pipeline: re-encoding request failed", "error", err)
+					apierr.Write(w, http.StatusInternalServerError, "gateway_error", "internal error")
+					return
+				}
+			}
+
+			trace, _ := json.Marshal(res.Trace)
+			entry := audit.Entry{
+				RequestID:   requestID,
+				SystemID:    sys.ID,
+				SystemName:  sys.Name,
+				Model:       req.Model,
+				Action:      string(res.Action),
+				Check:       res.Check,
+				Reason:      res.Reason,
+				Trace:       trace,
+				RequestHash: audit.HashBytes(body),
+			}
+			if res.Action == Allow || res.Action == Modify {
+				entry.ForwardedHash = audit.HashBytes(forward)
+			}
+
+			// No record, no request: if the decision can't be written down,
+			// the request is refused rather than handled without a trace.
+			if err := rec.Record(r.Context(), entry); err != nil {
+				log.Error("audit write failed", "request_id", requestID, "error", err)
+				apierr.Write(w, http.StatusServiceUnavailable, "gateway_error",
+					"audit log unavailable; request not processed")
+				return
+			}
 
 			switch res.Action {
 			case Block:
@@ -68,21 +118,22 @@ func Middleware(p *Pipeline, log *slog.Logger) func(http.Handler) http.Handler {
 				apierr.Write(w, http.StatusForbidden, "approval_required",
 					"held for human review by "+res.Check+": "+res.Reason)
 				return
-			case Modify:
-				body, err = req.Encode()
-				if err != nil {
-					log.Error("pipeline: re-encoding request failed", "error", err)
-					apierr.Write(w, http.StatusInternalServerError, "gateway_error", "internal error")
-					return
-				}
 			}
 
 			// The body was consumed above, so give the next handler a fresh
 			// reader over the (possibly modified) bytes.
-			r.Body = io.NopCloser(bytes.NewReader(body))
-			r.ContentLength = int64(len(body))
-			r.Header.Set("Content-Length", strconv.Itoa(len(body)))
+			r.Body = io.NopCloser(bytes.NewReader(forward))
+			r.ContentLength = int64(len(forward))
+			r.Header.Set("Content-Length", strconv.Itoa(len(forward)))
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// newRequestID returns a random ID that links a response to its audit
+// entry. Callers see it in the X-Request-ID response header.
+func newRequestID() string {
+	b := make([]byte, 12)
+	rand.Read(b)
+	return hex.EncodeToString(b)
 }

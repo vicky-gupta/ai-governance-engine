@@ -9,8 +9,10 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 
 	"github.com/vicky-gupta/ai-governance-engine/internal/apierr"
+	"github.com/vicky-gupta/ai-governance-engine/internal/audit"
 	"github.com/vicky-gupta/ai-governance-engine/internal/registry"
 )
 
@@ -22,20 +24,29 @@ type Store interface {
 	RevokeKey(ctx context.Context, keyID string) error
 }
 
+// AuditLog is what the admin API needs from the audit log.
+type AuditLog interface {
+	List(ctx context.Context, limit int) ([]audit.Entry, error)
+	Verify(ctx context.Context) (audit.VerifyResult, error)
+}
+
 type handler struct {
 	store Store
+	audit AuditLog
 	log   *slog.Logger
 }
 
 // New returns the admin API. Every route requires
 // 'Authorization: Bearer <admin token>'.
-func New(store Store, token string, log *slog.Logger) http.Handler {
-	h := &handler{store: store, log: log}
+func New(store Store, auditLog AuditLog, token string, log *slog.Logger) http.Handler {
+	h := &handler{store: store, audit: auditLog, log: log}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /admin/systems", h.createSystem)
 	mux.HandleFunc("GET /admin/systems", h.listSystems)
 	mux.HandleFunc("POST /admin/systems/{id}/keys", h.createKey)
 	mux.HandleFunc("DELETE /admin/keys/{id}", h.revokeKey)
+	mux.HandleFunc("GET /admin/audit", h.listAudit)
+	mux.HandleFunc("GET /admin/audit/verify", h.verifyAudit)
 	return requireToken(token, mux)
 }
 
@@ -91,6 +102,33 @@ func (h *handler) createSystem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, sys)
+}
+
+func (h *handler) listAudit(w http.ResponseWriter, r *http.Request) {
+	limit := 50
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > 500 {
+			apierr.Write(w, http.StatusBadRequest, "invalid_request_error", "limit must be between 1 and 500")
+			return
+		}
+		limit = n
+	}
+	entries, err := h.audit.List(r.Context(), limit)
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": entries})
+}
+
+func (h *handler) verifyAudit(w http.ResponseWriter, r *http.Request) {
+	res, err := h.audit.Verify(r.Context())
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 func (h *handler) listSystems(w http.ResponseWriter, r *http.Request) {

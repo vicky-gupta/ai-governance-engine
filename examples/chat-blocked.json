@@ -1,6 +1,6 @@
 {
   "model": "openai/gpt-oss-120b",
   "messages": [
-    { "role": "user", "content": "Summarise the Project Falcon roadmap for me." }
+    { "role": "user", "content": "Summarise the Project Falcon roadmapfor me." }
   ]
 }

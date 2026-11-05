@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/vicky-gupta/ai-governance-engine/internal/audit"
 	"github.com/vicky-gupta/ai-governance-engine/internal/registry"
 )
 
@@ -45,6 +46,21 @@ func (f *fakeStore) RevokeKey(_ context.Context, id string) error {
 	return nil
 }
 
+// fakeAudit returns canned audit data.
+type fakeAudit struct {
+	gotLimit int
+	result   audit.VerifyResult
+}
+
+func (f *fakeAudit) List(_ context.Context, limit int) ([]audit.Entry, error) {
+	f.gotLimit = limit
+	return []audit.Entry{{ID: 1, Action: "allow"}}, nil
+}
+
+func (f *fakeAudit) Verify(context.Context) (audit.VerifyResult, error) {
+	return f.result, nil
+}
+
 const token = "test-admin-token-123"
 
 func do(t *testing.T, h http.Handler, method, path, body, auth string) *httptest.ResponseRecorder {
@@ -59,8 +75,13 @@ func do(t *testing.T, h http.Handler, method, path, body, auth string) *httptest
 }
 
 func newHandler() (http.Handler, *fakeStore) {
-	store := &fakeStore{}
-	return New(store, token, slog.New(slog.NewTextHandler(io.Discard, nil))), store
+	h, store, _ := newHandlerWithAudit()
+	return h, store
+}
+
+func newHandlerWithAudit() (http.Handler, *fakeStore, *fakeAudit) {
+	store, auditLog := &fakeStore{}, &fakeAudit{}
+	return New(store, auditLog, token, slog.New(slog.NewTextHandler(io.Discard, nil))), store, auditLog
 }
 
 func TestRequiresAdminToken(t *testing.T) {
@@ -129,5 +150,33 @@ func TestCreateAndRevokeKey(t *testing.T) {
 	}
 	if rec := do(t, h, "DELETE", "/admin/keys/unknown", "", token); rec.Code != http.StatusNotFound {
 		t.Errorf("revoke unknown: status = %d, want 404", rec.Code)
+	}
+}
+
+func TestAuditEndpoints(t *testing.T) {
+	h, _, auditLog := newHandlerWithAudit()
+
+	if rec := do(t, h, "GET", "/admin/audit", "", token); rec.Code != http.StatusOK || auditLog.gotLimit != 50 {
+		t.Errorf("default list: status=%d limit=%d, want 200 and 50", rec.Code, auditLog.gotLimit)
+	}
+	if rec := do(t, h, "GET", "/admin/audit?limit=5", "", token); rec.Code != http.StatusOK || auditLog.gotLimit != 5 {
+		t.Errorf("limit=5: status=%d limit=%d", rec.Code, auditLog.gotLimit)
+	}
+	for _, bad := range []string{"0", "501", "abc"} {
+		if rec := do(t, h, "GET", "/admin/audit?limit="+bad, "", token); rec.Code != http.StatusBadRequest {
+			t.Errorf("limit=%s: status=%d, want 400", bad, rec.Code)
+		}
+	}
+
+	auditLog.result = audit.VerifyResult{OK: false, Checked: 3, BrokenAt: 2, Problem: "contents changed"}
+	rec := do(t, h, "GET", "/admin/audit/verify", "", token)
+	var got audit.VerifyResult
+	json.NewDecoder(rec.Body).Decode(&got)
+	if rec.Code != http.StatusOK || got.OK || got.BrokenAt != 2 {
+		t.Errorf("verify: status=%d result=%+v, want the broken result passed through", rec.Code, got)
+	}
+
+	if rec := do(t, h, "GET", "/admin/audit", "", "wrong"); rec.Code != http.StatusUnauthorized {
+		t.Errorf("audit without admin token: status=%d, want 401", rec.Code)
 	}
 }

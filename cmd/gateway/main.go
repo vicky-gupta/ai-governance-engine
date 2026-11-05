@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/vicky-gupta/ai-governance-engine/internal/admin"
+	"github.com/vicky-gupta/ai-governance-engine/internal/audit"
 	"github.com/vicky-gupta/ai-governance-engine/internal/auth"
 	"github.com/vicky-gupta/ai-governance-engine/internal/checks"
 	"github.com/vicky-gupta/ai-governance-engine/internal/config"
@@ -49,6 +50,7 @@ func run(log *slog.Logger) error {
 	log.Info("database ready")
 
 	store := registry.NewStore(pool)
+	auditLog := audit.NewStore(pool)
 	upstream, _ := cfg.Upstream()
 	p := proxy.New(upstream, cfg.UpstreamAPIKey, log)
 	// The governance checks, in the order they run.
@@ -56,8 +58,9 @@ func run(log *slog.Logger) error {
 		checks.BlockedTerms{Terms: cfg.BlockedTerms},
 		checks.MaxTokens{Limit: cfg.MaxTokens},
 	)
+	log.Info("checks configured", "blocked_terms", cfg.BlockedTerms, "max_tokens", cfg.MaxTokens)
 	requireKey := auth.Middleware(store, log)
-	runChecks := pipeline.Middleware(checkPipeline, log)
+	runChecks := pipeline.Middleware(checkPipeline, auditLog, log)
 
 	srv := &http.Server{
 		Addr: cfg.Addr,
@@ -66,7 +69,7 @@ func run(log *slog.Logger) error {
 			DB:     pool,
 			Chat:   requireKey(runChecks(p)),
 			Models: requireKey(p),
-			Admin:  admin.New(store, cfg.AdminToken, log),
+			Admin:  admin.New(store, auditLog, cfg.AdminToken, log),
 		}).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
