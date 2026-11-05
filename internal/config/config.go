@@ -4,14 +4,18 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strconv"
+	"strings"
 )
 
 type Config struct {
-	Addr           string // where the gateway listens, e.g. ":8080"
-	DatabaseURL    string // Postgres connection string
-	UpstreamURL    string // LLM provider base URL, e.g. https://api.groq.com/openai
-	UpstreamAPIKey string // the provider API key; only the gateway knows it
-	AdminToken     string // protects the /admin API
+	Addr           string   // where the gateway listens, e.g. ":8080"
+	DatabaseURL    string   // Postgres connection string
+	UpstreamURL    string   // LLM provider base URL, e.g. https://api.groq.com/openai
+	UpstreamAPIKey string   // the provider API key; only the gateway knows it
+	AdminToken     string   // protects the /admin API
+	BlockedTerms   []string // requests mentioning any of these are blocked
+	MaxTokens      int      // upper limit for max_tokens on every request
 }
 
 func Load() (Config, error) {
@@ -28,6 +32,17 @@ func Load() (Config, error) {
 	if cfg.UpstreamAPIKey == "" {
 		return Config{}, fmt.Errorf("UPSTREAM_API_KEY is required")
 	}
+	for _, term := range strings.Split(os.Getenv("BLOCKED_TERMS"), ",") {
+		if term = strings.TrimSpace(term); term != "" {
+			cfg.BlockedTerms = append(cfg.BlockedTerms, term)
+		}
+	}
+
+	maxTokens, err := strconv.Atoi(getEnv("MAX_TOKENS", "4096"))
+	if err != nil || maxTokens <= 0 {
+		return Config{}, fmt.Errorf("MAX_TOKENS must be a positive whole number")
+	}
+	cfg.MaxTokens = maxTokens
 	if len(cfg.AdminToken) < 16 {
 		return Config{}, fmt.Errorf("ADMIN_TOKEN is required and must be at least 16 characters")
 	}

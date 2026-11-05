@@ -18,10 +18,11 @@ func (f fakeDB) Ping(context.Context) error { return f.err }
 // testDeps returns working defaults; each test overrides what it needs.
 func testDeps() Deps {
 	return Deps{
-		Log:   slog.New(slog.NewTextHandler(io.Discard, nil)),
-		DB:    fakeDB{},
-		Proxy: http.NotFoundHandler(),
-		Admin: http.NotFoundHandler(),
+		Log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		DB:     fakeDB{},
+		Chat:   http.NotFoundHandler(),
+		Models: http.NotFoundHandler(),
+		Admin:  http.NotFoundHandler(),
 	}
 }
 
@@ -52,7 +53,8 @@ func TestReadyz(t *testing.T) {
 func TestRouting(t *testing.T) {
 	var hit string
 	deps := testDeps()
-	deps.Proxy = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hit = "proxy" })
+	deps.Chat = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hit = "chat" })
+	deps.Models = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hit = "models" })
 	deps.Admin = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hit = "admin" })
 	h := New(deps).Handler()
 
@@ -61,8 +63,8 @@ func TestRouting(t *testing.T) {
 		wantHit      string
 		wantCode     int
 	}{
-		{"POST", "/v1/chat/completions", "proxy", http.StatusOK},
-		{"GET", "/v1/models", "proxy", http.StatusOK},
+		{"POST", "/v1/chat/completions", "chat", http.StatusOK},
+		{"GET", "/v1/models", "models", http.StatusOK},
 		{"GET", "/admin/systems", "admin", http.StatusOK},
 		{"POST", "/v1/files", "", http.StatusNotFound},
 		{"GET", "/v1/chat/completions", "", http.StatusMethodNotAllowed},

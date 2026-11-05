@@ -21,6 +21,12 @@ type Lookup interface {
 
 type ctxKey struct{}
 
+// WithSystem returns a copy of ctx carrying sys. The middleware uses it,
+// and so do tests in other packages that need an authenticated request.
+func WithSystem(ctx context.Context, sys registry.System) context.Context {
+	return context.WithValue(ctx, ctxKey{}, sys)
+}
+
 // SystemFrom returns the AI system that made this request.
 func SystemFrom(ctx context.Context) (registry.System, bool) {
 	sys, ok := ctx.Value(ctxKey{}).(registry.System)
@@ -62,7 +68,7 @@ func Middleware(lookup Lookup, log *slog.Logger) func(http.Handler) http.Handler
 			}
 
 			log.Info("ai request", "ai_system", sys.Name, "risk_tier", sys.RiskTier, "path", r.URL.Path)
-			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, sys)))
+			next.ServeHTTP(w, r.WithContext(WithSystem(r.Context(), sys)))
 		})
 	}
 }

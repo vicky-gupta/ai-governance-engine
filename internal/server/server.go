@@ -18,10 +18,11 @@ type Pinger interface {
 
 // Deps holds everything the server needs.
 type Deps struct {
-	Log   *slog.Logger
-	DB    Pinger       // used by /readyz
-	Proxy http.Handler // model routes, already wrapped with auth
-	Admin http.Handler // the /admin API
+	Log    *slog.Logger
+	DB     Pinger       // used by /readyz
+	Chat   http.Handler // POST /v1/chat/completions: auth + pipeline + proxy
+	Models http.Handler // GET /v1/models: auth + proxy
+	Admin  http.Handler // the /admin API
 }
 
 type Server struct {
@@ -40,8 +41,8 @@ func (s *Server) Handler() http.Handler {
 
 	// OpenAI-compatible routes. Only these are forwarded; anything
 	// else gets a 404 (deny by default).
-	mux.Handle("POST /v1/chat/completions", s.deps.Proxy)
-	mux.Handle("GET /v1/models", s.deps.Proxy)
+	mux.Handle("POST /v1/chat/completions", s.deps.Chat)
+	mux.Handle("GET /v1/models", s.deps.Models)
 
 	// Registry management. The admin handler does its own routing.
 	mux.Handle("/admin/", s.deps.Admin)
