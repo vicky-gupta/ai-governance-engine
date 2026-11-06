@@ -22,6 +22,15 @@ type Recorder interface {
 	Record(ctx context.Context, e audit.Entry) error
 }
 
+type providerKey struct{}
+
+// ProviderFrom returns the provider the pipeline chose for this request.
+// The proxy router uses it to decide where to send the request.
+func ProviderFrom(r *http.Request) string {
+	p, _ := r.Context().Value(providerKey{}).(string)
+	return p
+}
+
 // maxBodyBytes limits request size. Chat requests with long histories can
 // be large, but 10 MB is far beyond any normal one.
 const maxBodyBytes = 10 << 20
@@ -88,6 +97,8 @@ func Middleware(p *Pipeline, rec Recorder, log *slog.Logger) func(http.Handler) 
 				SystemID:    sys.ID,
 				SystemName:  sys.Name,
 				Model:       req.Model,
+				Provider:    req.Provider,
+				Region:      req.Region,
 				Action:      string(res.Action),
 				Check:       res.Check,
 				Reason:      res.Reason,
@@ -122,6 +133,8 @@ func Middleware(p *Pipeline, rec Recorder, log *slog.Logger) func(http.Handler) 
 
 			// The body was consumed above, so give the next handler a fresh
 			// reader over the (possibly modified) bytes.
+			r.Body = io.NopCloser(bytes.NewReader(forward))
+			r = r.WithContext(context.WithValue(r.Context(), providerKey{}, req.Provider))
 			r.Body = io.NopCloser(bytes.NewReader(forward))
 			r.ContentLength = int64(len(forward))
 			r.Header.Set("Content-Length", strconv.Itoa(len(forward)))

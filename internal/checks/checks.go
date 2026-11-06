@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/vicky-gupta/ai-governance-engine/internal/catalog"
 	"github.com/vicky-gupta/ai-governance-engine/internal/pipeline"
 )
 
@@ -51,4 +52,34 @@ func (c MaxTokens) Check(_ context.Context, req *pipeline.Request) pipeline.Deci
 		Action: pipeline.Modify,
 		Reason: fmt.Sprintf("max_tokens set to %d", c.Limit),
 	}
+}
+
+// ModelPolicy allows only models listed in the catalog, and only in the
+// regions the calling system's risk tier permits. It also chooses which
+// provider the request is sent to, so it must run before any check that
+// depends on the route.
+type ModelPolicy struct {
+	Catalog *catalog.Catalog
+}
+
+func (ModelPolicy) Name() string { return "model_policy" }
+
+func (c ModelPolicy) Check(_ context.Context, req *pipeline.Request) pipeline.Decision {
+	m, ok := c.Catalog.Lookup(req.Model)
+	if !ok {
+		return pipeline.Decision{
+			Action: pipeline.Block,
+			Reason: fmt.Sprintf("model %q is not in the approved catalog", req.Model),
+		}
+	}
+	tier := req.System.RiskTier
+	if !c.Catalog.RegionAllowed(tier, m.Region) {
+		return pipeline.Decision{
+			Action: pipeline.Block,
+			Reason: fmt.Sprintf("%s-risk systems may only use models hosted in %s; %q runs in %q",
+				tier, strings.Join(c.Catalog.AllowedRegions[tier], ", "), m.ID, m.Region),
+		}
+	}
+	req.Provider, req.Region = m.Provider, m.Region
+	return pipeline.Decision{Action: pipeline.Allow}
 }

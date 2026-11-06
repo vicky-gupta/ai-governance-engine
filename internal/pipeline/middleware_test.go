@@ -160,3 +160,23 @@ func TestMiddlewareRefusesWhenAuditFails(t *testing.T) {
 		t.Errorf("reached=%v status=%d, want 503 and not forwarded", reached, resp.Code)
 	}
 }
+func TestMiddlewarePassesRouteToProxy(t *testing.T) {
+	route := fakeCheck{name: "route", action: Allow, modify: func(r *Request) {
+		r.Provider, r.Region = "mistral", "eu"
+	}}
+	rec := &fakeRecorder{}
+	var gotProvider string
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { gotProvider = ProviderFrom(r) })
+	h := Middleware(New(route), rec, slog.New(slog.NewTextHandler(io.Discard, nil)))(next)
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(validBody))
+	req = req.WithContext(auth.WithSystem(req.Context(), registry.System{ID: "sys-1", Name: "support-bot"}))
+	h.ServeHTTP(httptest.NewRecorder(), req)
+
+	if gotProvider != "mistral" {
+		t.Errorf("proxy saw provider %q, want mistral", gotProvider)
+	}
+	if e := rec.entries[0]; e.Provider != "mistral" || e.Region != "eu" {
+		t.Errorf("audit entry provider=%q region=%q, want mistral/eu", e.Provider, e.Region)
+	}
+}

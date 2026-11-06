@@ -4,7 +4,9 @@ import (
 	"context"
 	"testing"
 
+	"github.com/vicky-gupta/ai-governance-engine/internal/catalog"
 	"github.com/vicky-gupta/ai-governance-engine/internal/pipeline"
+	"github.com/vicky-gupta/ai-governance-engine/internal/registry"
 )
 
 func request(t *testing.T, body string) *pipeline.Request {
@@ -55,6 +57,42 @@ func TestMaxTokens(t *testing.T) {
 			d := c.Check(ctx, req)
 			if d.Action != tc.action || *req.MaxTokens != tc.wantLimit {
 				t.Errorf("action=%s max_tokens=%d, want %s and %d", d.Action, *req.MaxTokens, tc.action, tc.wantLimit)
+			}
+		})
+	}
+}
+func TestModelPolicy(t *testing.T) {
+	cat, err := catalog.Parse([]byte(`{
+		"providers": [
+			{"name":"groq","base_url":"https://api.groq.com/openai","api_key_env":"G","region":"us","models":["llama"]},
+			{"name":"mistral","base_url":"https://api.mistral.ai","api_key_env":"M","region":"eu","models":["mistral-small"]}
+		],
+		"allowed_regions": {"minimal":["eu","us"], "limited":["eu","us"], "high":["eu"]}
+	}`), func(string) string { return "key" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := ModelPolicy{Catalog: cat}
+
+	cases := []struct {
+		name         string
+		tier         registry.RiskTier
+		model        string
+		action       pipeline.Action
+		wantProvider string
+	}{
+		{"approved model, allowed region", registry.RiskLimited, "llama", pipeline.Allow, "groq"},
+		{"high risk, EU model", registry.RiskHigh, "mistral-small", pipeline.Allow, "mistral"},
+		{"high risk, US model", registry.RiskHigh, "llama", pipeline.Block, ""},
+		{"unknown model", registry.RiskMinimal, "gpt-unapproved", pipeline.Block, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := request(t, `{"model":"`+tc.model+`","messages":[{"role":"user","content":"hi"}]}`)
+			req.System = registry.System{Name: "test", RiskTier: tc.tier}
+			d := c.Check(context.Background(), req)
+			if d.Action != tc.action || req.Provider != tc.wantProvider {
+				t.Errorf("action=%s provider=%q (%s), want %s and %q", d.Action, req.Provider, d.Reason, tc.action, tc.wantProvider)
 			}
 		})
 	}

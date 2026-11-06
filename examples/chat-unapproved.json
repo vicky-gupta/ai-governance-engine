@@ -1,0 +1,4 @@
+{
+  "model": "some-other-model",
+  "messages": [ { "role": "user", "content": "Hello" } ]
+}

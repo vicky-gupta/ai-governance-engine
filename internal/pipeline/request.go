@@ -17,6 +17,11 @@ type Request struct {
 	Messages  []Message
 	MaxTokens *int // nil when the caller didn't set it
 
+	// Where the request goes. Set by a routing check (ModelPolicy); never
+	// sent to the provider.
+	Provider string
+	Region   string
+
 	fields map[string]json.RawMessage
 }
 

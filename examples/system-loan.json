@@ -1,0 +1,6 @@
+{
+  "name": "loan-agent",
+  "owner": "credit-team",
+  "purpose": "Assesses creditworthiness of loan applicants",
+  "risk_tier": "high"
+}

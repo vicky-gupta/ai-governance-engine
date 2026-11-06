@@ -2,3 +2,4 @@ bin/
 *.exe
 .env
 coverage.out
+dev.ps1

@@ -50,6 +50,8 @@ func TestComputeHashDetectsEveryField(t *testing.T) {
 		"reason":    func(e *Entry) { e.Reason = "edited" },
 		"trace":     func(e *Entry) { e.Trace = json.RawMessage(`[]`) },
 		"body hash": func(e *Entry) { e.RequestHash = "y" },
+		"provider":  func(e *Entry) { e.Provider = "mistral" },
+		"region":    func(e *Entry) { e.Region = "eu" },
 	}
 	for name, change := range changes {
 		t.Run(name, func(t *testing.T) {
@@ -59,5 +61,15 @@ func TestComputeHashDetectsEveryField(t *testing.T) {
 				t.Errorf("changing the %s did not change the hash", name)
 			}
 		})
+	}
+}
+
+// TestHashFormatUnchanged pins the hash of sampleEntry as computed before
+// provider and region existed. If this fails, entries already in the log
+// would stop verifying. Never "fix" it by changing the expected value.
+func TestHashFormatUnchanged(t *testing.T) {
+	const want = "dd6cbc055c1b2ba0887a9bd26e4fc4096838c103f792db0d0a046115e560191a"
+	if got := sampleEntry().ComputeHash(); got != want {
+		t.Errorf("hash = %s, want %s: the hash format changed", got, want)
 	}
 }
