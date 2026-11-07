@@ -66,9 +66,11 @@ func run(log *slog.Logger) error {
 	router := proxy.NewRouter(providers, pipeline.ProviderFrom, log)
 
 	// The governance checks, in the order they run. ModelPolicy goes first:
-	// it rejects unapproved models and chooses the provider.
+	// it rejects unapproved models and chooses the provider. PII redaction
+	// comes next, so every later step only ever sees redacted text.
 	checkPipeline := pipeline.New(
 		checks.ModelPolicy{Catalog: cat},
+		checks.PIIRedaction{},
 		checks.BlockedTerms{Terms: cfg.BlockedTerms},
 		checks.MaxTokens{Limit: cfg.MaxTokens},
 	)

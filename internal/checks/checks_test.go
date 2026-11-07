@@ -2,6 +2,7 @@ package checks
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/vicky-gupta/ai-governance-engine/internal/catalog"
@@ -95,5 +96,39 @@ func TestModelPolicy(t *testing.T) {
 				t.Errorf("action=%s provider=%q (%s), want %s and %q", d.Action, req.Provider, d.Reason, tc.action, tc.wantProvider)
 			}
 		})
+	}
+}
+func TestPIIRedaction(t *testing.T) {
+	c := PIIRedaction{}
+	ctx := context.Background()
+
+	clean := request(t, `{"model":"m","messages":[{"role":"user","content":"What are your opening hours?"}]}`)
+	if d := c.Check(ctx, clean); d.Action != pipeline.Allow {
+		t.Errorf("clean request: %s, want allow", d.Action)
+	}
+
+	req := request(t, `{"model":"m","messages":[
+		{"role":"system","content":"You help with payments."},
+		{"role":"user","content":"Move 500 EUR from DE89 3704 0044 0532 0130 00 and confirm to anna@example.com"},
+		{"role":"user","content":[{"type":"text","text":"Is DE89370400440532013000 correct?"}]}
+	]}`)
+	d := c.Check(ctx, req)
+	if d.Action != pipeline.Modify || d.Reason != "redacted 1 EMAIL, 1 IBAN" {
+		t.Fatalf("got %s %q, want modify with a summary", d.Action, d.Reason)
+	}
+
+	out, _ := req.Encode()
+	body := string(out)
+	for _, leaked := range []string{"DE89", "3704", "anna@example.com"} {
+		if strings.Contains(body, leaked) {
+			t.Errorf("%q reached the forwarded body: %s", leaked, body)
+		}
+	}
+	// The same IBAN in two messages gets the same token.
+	if strings.Count(body, "[IBAN_1]") != 2 || strings.Contains(body, "[IBAN_2]") {
+		t.Errorf("tokens not consistent across messages: %s", body)
+	}
+	if strings.Contains(d.Reason, "anna") {
+		t.Error("the reason contains a personal value")
 	}
 }

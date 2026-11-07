@@ -1,0 +1,10 @@
+{
+  "model": "openai/gpt-oss-120b",
+  "max_tokens": 200,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Hi, I am Anna (anna.schmidt@example.com, +49 30 12345678). Please repeat back exactly the IBAN DE89 3704 0044 0532 0130 00 and the card 4111 1111 1111 1111 I gave you."
+    }
+  ]
+}

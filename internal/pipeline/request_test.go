@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -75,5 +76,49 @@ func TestEncodeKeepsUnknownFields(t *testing.T) {
 	msg := got["messages"].([]any)[0].(map[string]any)
 	if msg["name"] != "bob" {
 		t.Errorf("unknown message field lost: %s", out)
+	}
+}
+
+func TestMapText(t *testing.T) {
+	req, err := ParseRequest([]byte(`{"model":"m","messages":[
+		{"role":"user","content":"my secret"},
+		{"role":"user","content":[
+			{"type":"text","text":"secret again"},
+			{"type":"image_url","image_url":{"url":"https://example.com/secret.png"}}
+		]},
+		{"role":"assistant","content":null,"tool_calls":[{"id":"1"}]},
+		{"role":"user","content":"nothing here"}
+	]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hide := func(s string) string { return strings.ReplaceAll(s, "secret", "[X]") }
+
+	want := []bool{true, true, false, false}
+	for i, m := range req.Messages {
+		changed, err := m.MapText(hide)
+		if err != nil || changed != want[i] {
+			t.Errorf("message %d: changed=%v err=%v, want changed=%v", i, changed, err, want[i])
+		}
+	}
+
+	out, _ := req.Encode()
+	got := string(out)
+	if strings.Contains(got, "my secret") || strings.Contains(got, "secret again") {
+		t.Errorf("text not replaced: %s", got)
+	}
+	// Image URLs are not text: they must be left exactly as they were.
+	if !strings.Contains(got, "https://example.com/secret.png") {
+		t.Errorf("image part was changed: %s", got)
+	}
+	if !strings.Contains(got, `"tool_calls"`) {
+		t.Errorf("other message fields lost: %s", got)
+	}
+}
+
+func TestMapTextRejectsUnknownContent(t *testing.T) {
+	m := Message{"role": json.RawMessage(`"user"`), "content": json.RawMessage(`42`)}
+	if _, err := m.MapText(func(s string) string { return s }); err == nil {
+		t.Error("expected an error for content that is a number")
 	}
 }

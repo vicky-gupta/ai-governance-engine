@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/vicky-gupta/ai-governance-engine/internal/catalog"
+	"github.com/vicky-gupta/ai-governance-engine/internal/pii"
 	"github.com/vicky-gupta/ai-governance-engine/internal/pipeline"
 )
 
@@ -82,4 +83,29 @@ func (c ModelPolicy) Check(_ context.Context, req *pipeline.Request) pipeline.De
 	}
 	req.Provider, req.Region = m.Provider, m.Region
 	return pipeline.Decision{Action: pipeline.Allow}
+}
+
+// PIIRedaction replaces personal data in every message with tokens such as
+// [IBAN_1] before the request leaves the company. The provider never sees
+// the real values. The decision's reason lists only what kinds were found,
+// never the values, so it is safe to log and audit.
+type PIIRedaction struct{}
+
+func (PIIRedaction) Name() string { return "pii_redaction" }
+
+func (PIIRedaction) Check(_ context.Context, req *pipeline.Request) pipeline.Decision {
+	r := pii.NewRedactor()
+	changed := false
+	for _, m := range req.Messages {
+		c, err := m.MapText(r.Redact)
+		if err != nil {
+			// Content we can't read is content we can't check: fail closed.
+			return pipeline.Decision{Action: pipeline.Block, Reason: "could not inspect message content: " + err.Error()}
+		}
+		changed = changed || c
+	}
+	if !changed {
+		return pipeline.Decision{Action: pipeline.Allow}
+	}
+	return pipeline.Decision{Action: pipeline.Modify, Reason: "redacted " + r.Summary()}
 }

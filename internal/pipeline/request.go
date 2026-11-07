@@ -60,6 +60,48 @@ func (m Message) Text() string {
 	return strings.Join(texts, "\n")
 }
 
+// MapText applies f to every piece of text in the message content and
+// reports whether anything changed. Plain-string content and the text
+// parts of a parts list are both handled; other parts (images) and other
+// message fields are left exactly as they were.
+func (m Message) MapText(f func(string) string) (bool, error) {
+	raw, ok := m["content"]
+	if !ok || string(raw) == "null" {
+		return false, nil // e.g. an assistant message that only calls a tool
+	}
+
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		out := f(s)
+		if out == s {
+			return false, nil
+		}
+		m["content"], _ = json.Marshal(out)
+		return true, nil
+	}
+
+	var parts []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return false, errors.New("message content is neither text nor a list of parts")
+	}
+	changed := false
+	for _, part := range parts {
+		var typ, text string
+		json.Unmarshal(part["type"], &typ)
+		if typ != "text" || json.Unmarshal(part["text"], &text) != nil {
+			continue
+		}
+		if out := f(text); out != text {
+			part["text"], _ = json.Marshal(out)
+			changed = true
+		}
+	}
+	if changed {
+		m["content"], _ = json.Marshal(parts)
+	}
+	return changed, nil
+}
+
 // ParseRequest reads a chat completion request body.
 func ParseRequest(body []byte) (*Request, error) {
 	var fields map[string]json.RawMessage
