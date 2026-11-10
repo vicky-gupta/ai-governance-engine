@@ -117,3 +117,23 @@ func TestProviderDownReturns502(t *testing.T) {
 		t.Errorf("body = %q, want an OpenAI-style error", rec.Body.String())
 	}
 }
+func TestRenamesUpstreamRequestID(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Request-ID", "provider-123")
+	}))
+	defer upstream.Close()
+	target, _ := url.Parse(upstream.URL)
+
+	// The gateway has already set its own ID before the proxy runs.
+	rec := httptest.NewRecorder()
+	rec.Header().Set("X-Request-ID", "gateway-abc")
+	New(target, "k", discardLogger()).ServeHTTP(rec,
+		httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{}`)))
+
+	if got := rec.Header().Values("X-Request-ID"); len(got) != 1 || got[0] != "gateway-abc" {
+		t.Errorf("X-Request-ID = %v, want only the gateway's ID", got)
+	}
+	if got := rec.Header().Get("X-Upstream-Request-ID"); got != "provider-123" {
+		t.Errorf("X-Upstream-Request-ID = %q, want the provider's ID", got)
+	}
+}

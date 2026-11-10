@@ -103,3 +103,23 @@ func TestRedactKeepsBrackets(t *testing.T) {
 		t.Errorf("got %q: the closing bracket must stay", got)
 	}
 }
+func TestReplacements(t *testing.T) {
+	r := NewRedactor()
+	r.Redact("From DE89 3704 0044 0532 0130 00, again DE89370400440532013000, mail a@b.eu")
+	got := r.Replacements()
+	if len(got) != 2 {
+		t.Fatalf("got %d replacements, want 2 (the IBAN only once): %+v", len(got), got)
+	}
+	if got[0] != (Replacement{Token: "[IBAN_1]", Kind: IBAN, Value: "DE89 3704 0044 0532 0130 00"}) {
+		t.Errorf("first = %+v", got[0])
+	}
+	if got[1].Token != "[EMAIL_1]" || got[1].Value != "a@b.eu" {
+		t.Errorf("second = %+v", got[1])
+	}
+}
+
+func TestValidKind(t *testing.T) {
+	if !ValidKind(IBAN) || !ValidKind(ESDNI) || ValidKind("PASSPORT") {
+		t.Error("ValidKind gave the wrong answer")
+	}
+}

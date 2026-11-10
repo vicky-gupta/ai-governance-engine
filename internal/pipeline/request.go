@@ -12,6 +12,7 @@ import (
 // change. Fields the gateway doesn't model (temperature, tools, ...) are
 // kept untouched in fields and sent on unchanged.
 type Request struct {
+	ID        string          // request ID, shared with the audit log and the vault
 	System    registry.System // who is calling (set by the auth middleware)
 	Model     string
 	Messages  []Message

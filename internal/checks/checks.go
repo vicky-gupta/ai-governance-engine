@@ -85,27 +85,43 @@ func (c ModelPolicy) Check(_ context.Context, req *pipeline.Request) pipeline.De
 	return pipeline.Decision{Action: pipeline.Allow}
 }
 
+// Vault stores the original values behind redaction tokens.
+type Vault interface {
+	Save(ctx context.Context, requestID string, reps []pii.Replacement) error
+}
+
 // PIIRedaction replaces personal data in every message with tokens such as
 // [IBAN_1] before the request leaves the company. The provider never sees
-// the real values. The decision's reason lists only what kinds were found,
-// never the values, so it is safe to log and audit.
-type PIIRedaction struct{}
+// the real values. If a Vault is set, the originals are stored encrypted.
+// The decision's reason lists only what kinds were found, never the
+// values, so it is safe to log and audit.
+type PIIRedaction struct {
+	Vault Vault // optional
+}
 
 func (PIIRedaction) Name() string { return "pii_redaction" }
 
-func (PIIRedaction) Check(_ context.Context, req *pipeline.Request) pipeline.Decision {
+func (c PIIRedaction) Check(ctx context.Context, req *pipeline.Request) pipeline.Decision {
 	r := pii.NewRedactor()
 	changed := false
 	for _, m := range req.Messages {
-		c, err := m.MapText(r.Redact)
+		ch, err := m.MapText(r.Redact)
 		if err != nil {
 			// Content we can't read is content we can't check: fail closed.
 			return pipeline.Decision{Action: pipeline.Block, Reason: "could not inspect message content: " + err.Error()}
 		}
-		changed = changed || c
+		changed = changed || ch
 	}
 	if !changed {
 		return pipeline.Decision{Action: pipeline.Allow}
+	}
+
+	if c.Vault != nil {
+		if err := c.Vault.Save(ctx, req.ID, r.Replacements()); err != nil {
+			// The request would still be safe to send, but its originals
+			// would be lost for good. Refuse, like a failed audit write.
+			return pipeline.Decision{Action: pipeline.Block, Reason: "could not store redacted values securely"}
+		}
 	}
 	return pipeline.Decision{Action: pipeline.Modify, Reason: "redacted " + r.Summary()}
 }

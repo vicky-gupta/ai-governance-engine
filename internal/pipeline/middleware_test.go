@@ -180,3 +180,12 @@ func TestMiddlewarePassesRouteToProxy(t *testing.T) {
 		t.Errorf("audit entry provider=%q region=%q, want mistral/eu", e.Provider, e.Region)
 	}
 }
+
+func TestChecksSeeTheRequestID(t *testing.T) {
+	var seen string
+	peek := fakeCheck{name: "peek", action: Allow, modify: func(r *Request) { seen = r.ID }}
+	resp, _, _ := run(t, New(peek), validBody, true)
+	if seen == "" || seen != resp.Header().Get("X-Request-ID") {
+		t.Errorf("check saw ID %q, response header has %q", seen, resp.Header().Get("X-Request-ID"))
+	}
+}

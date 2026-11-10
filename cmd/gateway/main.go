@@ -20,6 +20,7 @@ import (
 	"github.com/vicky-gupta/ai-governance-engine/internal/proxy"
 	"github.com/vicky-gupta/ai-governance-engine/internal/registry"
 	"github.com/vicky-gupta/ai-governance-engine/internal/server"
+	"github.com/vicky-gupta/ai-governance-engine/internal/vault"
 )
 
 func main() {
@@ -52,6 +53,13 @@ func run(log *slog.Logger) error {
 
 	store := registry.NewStore(pool)
 	auditLog := audit.NewStore(pool)
+
+	vaultKeys, err := vault.NewKeys(cfg.VaultKey)
+	if err != nil {
+		return err
+	}
+	piiVault := vault.NewStore(pool, vaultKeys)
+
 	cat, err := catalog.Load(cfg.ProvidersFile, os.Getenv)
 	if err != nil {
 		return err
@@ -70,7 +78,7 @@ func run(log *slog.Logger) error {
 	// comes next, so every later step only ever sees redacted text.
 	checkPipeline := pipeline.New(
 		checks.ModelPolicy{Catalog: cat},
-		checks.PIIRedaction{},
+		checks.PIIRedaction{Vault: piiVault},
 		checks.BlockedTerms{Terms: cfg.BlockedTerms},
 		checks.MaxTokens{Limit: cfg.MaxTokens},
 	)
@@ -86,7 +94,7 @@ func run(log *slog.Logger) error {
 			DB:     pool,
 			Chat:   requireKey(runChecks(router)),
 			Models: requireKey(catalog.ModelsHandler(cat)),
-			Admin:  admin.New(store, auditLog, cfg.AdminToken, log),
+			Admin:  admin.New(store, auditLog, piiVault, cfg.AdminToken, log),
 		}).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}

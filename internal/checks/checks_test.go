@@ -2,10 +2,12 @@ package checks
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/vicky-gupta/ai-governance-engine/internal/catalog"
+	"github.com/vicky-gupta/ai-governance-engine/internal/pii"
 	"github.com/vicky-gupta/ai-governance-engine/internal/pipeline"
 	"github.com/vicky-gupta/ai-governance-engine/internal/registry"
 )
@@ -130,5 +132,47 @@ func TestPIIRedaction(t *testing.T) {
 	}
 	if strings.Contains(d.Reason, "anna") {
 		t.Error("the reason contains a personal value")
+	}
+}
+
+// fakeVault records what it was asked to save, or fails if err is set.
+type fakeVault struct {
+	requestID string
+	saved     []pii.Replacement
+	err       error
+}
+
+func (f *fakeVault) Save(_ context.Context, requestID string, reps []pii.Replacement) error {
+	f.requestID, f.saved = requestID, reps
+	return f.err
+}
+
+func TestPIIRedactionSavesToVault(t *testing.T) {
+	v := &fakeVault{}
+	req := request(t, `{"model":"m","messages":[{"role":"user","content":"Mail anna@example.com about DE89 3704 0044 0532 0130 00"}]}`)
+	req.ID = "req-42"
+
+	d := PIIRedaction{Vault: v}.Check(context.Background(), req)
+	if d.Action != pipeline.Modify {
+		t.Fatalf("action = %s, want modify", d.Action)
+	}
+	if v.requestID != "req-42" || len(v.saved) != 2 || v.saved[0].Value != "anna@example.com" {
+		t.Errorf("vault got request %q, values %+v", v.requestID, v.saved)
+	}
+
+	// Nothing to redact: the vault isn't called.
+	v2 := &fakeVault{}
+	clean := request(t, `{"model":"m","messages":[{"role":"user","content":"hello"}]}`)
+	PIIRedaction{Vault: v2}.Check(context.Background(), clean)
+	if v2.requestID != "" {
+		t.Error("vault was called for a clean request")
+	}
+}
+
+func TestPIIRedactionBlocksWhenVaultFails(t *testing.T) {
+	v := &fakeVault{err: errors.New("database down")}
+	req := request(t, `{"model":"m","messages":[{"role":"user","content":"Mail anna@example.com"}]}`)
+	if d := (PIIRedaction{Vault: v}).Check(context.Background(), req); d.Action != pipeline.Block {
+		t.Errorf("action = %s, want block", d.Action)
 	}
 }

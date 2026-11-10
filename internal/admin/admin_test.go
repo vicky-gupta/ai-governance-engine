@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -11,7 +12,9 @@ import (
 	"testing"
 
 	"github.com/vicky-gupta/ai-governance-engine/internal/audit"
+	"github.com/vicky-gupta/ai-governance-engine/internal/pii"
 	"github.com/vicky-gupta/ai-governance-engine/internal/registry"
+	"github.com/vicky-gupta/ai-governance-engine/internal/vault"
 )
 
 // fakeStore records what the handler asked for, with no database.
@@ -46,10 +49,20 @@ func (f *fakeStore) RevokeKey(_ context.Context, id string) error {
 	return nil
 }
 
-// fakeAudit returns canned audit data.
+// fakeAudit returns canned audit data and records entries in memory.
 type fakeAudit struct {
-	gotLimit int
-	result   audit.VerifyResult
+	gotLimit  int
+	result    audit.VerifyResult
+	recorded  []audit.Entry
+	recordErr error
+}
+
+func (f *fakeAudit) Record(_ context.Context, e audit.Entry) error {
+	if f.recordErr != nil {
+		return f.recordErr
+	}
+	f.recorded = append(f.recorded, e)
+	return nil
 }
 
 func (f *fakeAudit) List(_ context.Context, limit int) ([]audit.Entry, error) {
@@ -80,8 +93,31 @@ func newHandler() (http.Handler, *fakeStore) {
 }
 
 func newHandlerWithAudit() (http.Handler, *fakeStore, *fakeAudit) {
-	store, auditLog := &fakeStore{}, &fakeAudit{}
-	return New(store, auditLog, token, slog.New(slog.NewTextHandler(io.Discard, nil))), store, auditLog
+	h, store, auditLog, _ := newHandlerWithVault()
+	return h, store, auditLog
+}
+
+func newHandlerWithVault() (http.Handler, *fakeStore, *fakeAudit, *fakePIIVault) {
+	store, auditLog, v := &fakeStore{}, &fakeAudit{}, &fakePIIVault{}
+	return New(store, auditLog, v, token, slog.New(slog.NewTextHandler(io.Discard, nil))), store, auditLog, v
+}
+
+// fakePIIVault holds one request's values.
+type fakePIIVault struct {
+	erasedKind  pii.Kind
+	erasedValue string
+}
+
+func (f *fakePIIVault) Reveal(_ context.Context, requestID string) ([]vault.Value, error) {
+	if requestID != "req-1" {
+		return []vault.Value{}, nil
+	}
+	return []vault.Value{{Token: "[EMAIL_1]", Kind: pii.Email, Value: "anna@example.com"}}, nil
+}
+
+func (f *fakePIIVault) EraseValue(_ context.Context, kind pii.Kind, value string) (int64, error) {
+	f.erasedKind, f.erasedValue = kind, value
+	return 3, nil
 }
 
 func TestRequiresAdminToken(t *testing.T) {
@@ -178,5 +214,56 @@ func TestAuditEndpoints(t *testing.T) {
 
 	if rec := do(t, h, "GET", "/admin/audit", "", "wrong"); rec.Code != http.StatusUnauthorized {
 		t.Errorf("audit without admin token: status=%d, want 401", rec.Code)
+	}
+}
+func TestRevealPII(t *testing.T) {
+	h, _, auditLog, _ := newHandlerWithVault()
+
+	rec := do(t, h, "GET", "/admin/pii/req-1", "", token)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "anna@example.com") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body)
+	}
+	if len(auditLog.recorded) != 1 || auditLog.recorded[0].Action != "admin.reveal_pii" {
+		t.Errorf("audit = %+v, want one reveal entry", auditLog.recorded)
+	}
+	if strings.Contains(auditLog.recorded[0].Reason, "anna") {
+		t.Error("the audit entry contains the revealed value")
+	}
+
+	if rec := do(t, h, "GET", "/admin/pii/unknown", "", token); rec.Code != http.StatusNotFound {
+		t.Errorf("unknown request: status=%d, want 404", rec.Code)
+	}
+}
+
+func TestRevealPIIRefusesWithoutAudit(t *testing.T) {
+	h, _, auditLog, _ := newHandlerWithVault()
+	auditLog.recordErr = errors.New("database down")
+	rec := do(t, h, "GET", "/admin/pii/req-1", "", token)
+	if rec.Code != http.StatusInternalServerError || strings.Contains(rec.Body.String(), "anna") {
+		t.Errorf("status=%d body=%s, want 500 and no values", rec.Code, rec.Body)
+	}
+}
+
+func TestErasePII(t *testing.T) {
+	h, _, auditLog, v := newHandlerWithVault()
+
+	rec := do(t, h, "POST", "/admin/pii/erase", `{"kind":"EMAIL","value":"anna@example.com"}`, token)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"erased":3`) {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body)
+	}
+	if v.erasedKind != pii.Email || v.erasedValue != "anna@example.com" {
+		t.Errorf("vault asked to erase %s %q", v.erasedKind, v.erasedValue)
+	}
+	if strings.Contains(rec.Body.String(), "anna") {
+		t.Error("the response echoes the erased value")
+	}
+	if len(auditLog.recorded) != 1 || strings.Contains(auditLog.recorded[0].Reason, "anna") {
+		t.Errorf("audit = %+v, want one entry without the value", auditLog.recorded)
+	}
+
+	for _, body := range []string{`{"kind":"PASSPORT","value":"x"}`, `{"kind":"EMAIL","value":""}`, `{"kind":"EMAIL","value":"a","extra":1}`} {
+		if rec := do(t, h, "POST", "/admin/pii/erase", body, token); rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: status=%d, want 400", body, rec.Code)
+		}
 	}
 }

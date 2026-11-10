@@ -6,13 +6,22 @@ import (
 	"strings"
 )
 
+// Replacement records one value that was replaced, so it can be stored
+// (encrypted) and looked up later.
+type Replacement struct {
+	Token string
+	Kind  Kind
+	Value string // the value as first written in the request
+}
+
 // Redactor replaces personal data with tokens. Use one Redactor per
 // request, so the same value gets the same token everywhere in it: if a
 // user mentions one IBAN twice, the model sees [IBAN_1] twice and can
 // still reason about it.
 type Redactor struct {
-	tokens map[string]string // kind + normalized value -> token
-	counts map[Kind]int
+	tokens       map[string]string // kind + normalized value -> token
+	counts       map[Kind]int
+	replacements []Replacement
 }
 
 func NewRedactor() *Redactor {
@@ -37,14 +46,21 @@ func (r *Redactor) Redact(text string) string {
 }
 
 func (r *Redactor) token(m Match) string {
-	key := string(m.Kind) + ":" + normalize(m.Value)
+	key := string(m.Kind) + ":" + Normalize(m.Value)
 	if t, ok := r.tokens[key]; ok {
 		return t
 	}
 	r.counts[m.Kind]++
 	t := fmt.Sprintf("[%s_%d]", m.Kind, r.counts[m.Kind])
 	r.tokens[key] = t
+	r.replacements = append(r.replacements, Replacement{Token: t, Kind: m.Kind, Value: m.Value})
 	return t
+}
+
+// Replacements lists every distinct value replaced so far, in the order
+// their tokens were created.
+func (r *Redactor) Replacements() []Replacement {
+	return r.replacements
 }
 
 // Summary describes what was redacted, without the values themselves,

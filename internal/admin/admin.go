@@ -4,16 +4,21 @@ package admin
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
 
 	"github.com/vicky-gupta/ai-governance-engine/internal/apierr"
 	"github.com/vicky-gupta/ai-governance-engine/internal/audit"
+	"github.com/vicky-gupta/ai-governance-engine/internal/pii"
 	"github.com/vicky-gupta/ai-governance-engine/internal/registry"
+	"github.com/vicky-gupta/ai-governance-engine/internal/vault"
 )
 
 // Store is what the admin API needs from the registry.
@@ -24,22 +29,29 @@ type Store interface {
 	RevokeKey(ctx context.Context, keyID string) error
 }
 
-// AuditLog is what the admin API needs from the audit log.
 type AuditLog interface {
+	Record(ctx context.Context, e audit.Entry) error
 	List(ctx context.Context, limit int) ([]audit.Entry, error)
 	Verify(ctx context.Context) (audit.VerifyResult, error)
+}
+
+// PIIVault is what the admin API needs from the PII vault.
+type PIIVault interface {
+	Reveal(ctx context.Context, requestID string) ([]vault.Value, error)
+	EraseValue(ctx context.Context, kind pii.Kind, value string) (int64, error)
 }
 
 type handler struct {
 	store Store
 	audit AuditLog
+	vault PIIVault
 	log   *slog.Logger
 }
 
 // New returns the admin API. Every route requires
 // 'Authorization: Bearer <admin token>'.
-func New(store Store, auditLog AuditLog, token string, log *slog.Logger) http.Handler {
-	h := &handler{store: store, audit: auditLog, log: log}
+func New(store Store, auditLog AuditLog, piiVault PIIVault, token string, log *slog.Logger) http.Handler {
+	h := &handler{store: store, audit: auditLog, vault: piiVault, log: log}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /admin/systems", h.createSystem)
 	mux.HandleFunc("GET /admin/systems", h.listSystems)
@@ -47,6 +59,8 @@ func New(store Store, auditLog AuditLog, token string, log *slog.Logger) http.Ha
 	mux.HandleFunc("DELETE /admin/keys/{id}", h.revokeKey)
 	mux.HandleFunc("GET /admin/audit", h.listAudit)
 	mux.HandleFunc("GET /admin/audit/verify", h.verifyAudit)
+	mux.HandleFunc("GET /admin/pii/{request_id}", h.revealPII)
+	mux.HandleFunc("POST /admin/pii/erase", h.erasePII)
 	return requireToken(token, mux)
 }
 
@@ -168,6 +182,82 @@ func (h *handler) revokeKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// revealPII shows the original values behind one request's tokens. Seeing
+// personal data is itself recorded in the audit log, before anything is
+// shown: if the record can't be written, nothing is revealed.
+func (h *handler) revealPII(w http.ResponseWriter, r *http.Request) {
+	requestID := r.PathValue("request_id")
+	values, err := h.vault.Reveal(r.Context(), requestID)
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	if len(values) == 0 {
+		apierr.Write(w, http.StatusNotFound, "invalid_request_error", "no stored values for this request")
+		return
+	}
+	if err := h.recordAdminAction(r.Context(), "admin.reveal_pii",
+		fmt.Sprintf("revealed %d values of request %s", len(values), requestID)); err != nil {
+		h.internalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"request_id": requestID, "data": values})
+}
+
+type eraseRequest struct {
+	Kind  pii.Kind `json:"kind"`
+	Value string   `json:"value"`
+}
+
+// erasePII deletes every stored copy of one person's value (GDPR right to
+// erasure). The value travels in the body, not the URL: URLs end up in
+// access logs, which would copy the very data being erased.
+func (h *handler) erasePII(w http.ResponseWriter, r *http.Request) {
+	var req eraseRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<16)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		apierr.Write(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON: "+err.Error())
+		return
+	}
+	if !pii.ValidKind(req.Kind) || req.Value == "" {
+		apierr.Write(w, http.StatusBadRequest, "invalid_request_error", "a valid kind and a value are required")
+		return
+	}
+
+	n, err := h.vault.EraseValue(r.Context(), req.Kind, req.Value)
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	// The record says what kind and how many, never the value itself.
+	if err := h.recordAdminAction(r.Context(), "admin.erase_pii",
+		fmt.Sprintf("erased %d stored %s values", n, req.Kind)); err != nil {
+		h.log.Error("erasure done but not audited", "erased", n, "error", err)
+		apierr.Write(w, http.StatusInternalServerError, "gateway_error",
+			fmt.Sprintf("erased %d values, but the audit record failed", n))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"erased": n})
+}
+
+// recordAdminAction writes an admin action to the audit log.
+func (h *handler) recordAdminAction(ctx context.Context, action, reason string) error {
+	return h.audit.Record(ctx, audit.Entry{
+		RequestID:  newID(),
+		SystemName: "admin",
+		Action:     action,
+		Reason:     reason,
+	})
+}
+
+func newID() string {
+	b := make([]byte, 12)
+	rand.Read(b)
+	return hex.EncodeToString(b)
 }
 
 func (h *handler) internalError(w http.ResponseWriter, err error) {

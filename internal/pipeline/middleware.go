@@ -66,9 +66,12 @@ func Middleware(p *Pipeline, rec Recorder, log *slog.Logger) func(http.Handler) 
 				return
 			}
 			req.System = sys
+			// Created before the checks run, so a check that stores data
+			// (like the PII vault) can link it to this request.
+			requestID := newRequestID()
+			req.ID = requestID
 
 			res := p.Run(r.Context(), req)
-			requestID := newRequestID()
 			w.Header().Set("X-Request-ID", requestID)
 			w.Header().Set("X-Aigov-Decision", string(res.Action))
 			log.Info("decision",

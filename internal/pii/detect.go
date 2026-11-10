@@ -94,9 +94,19 @@ func Find(text string) []Match {
 	return out
 }
 
-// normalize removes separators and upper-cases, so "DE89 3704…" and
+// ValidKind reports whether k is a kind this package detects.
+func ValidKind(k Kind) bool {
+	for _, d := range detectors {
+		if d.kind == k {
+			return true
+		}
+	}
+	return false
+}
+
+// Normalize removes separators and upper-cases, so "DE89 3704…" and
 // "de893704…" count as the same value.
-func normalize(s string) string {
+func Normalize(s string) string {
 	return strings.ToUpper(strings.NewReplacer(" ", "", "-", "", ".", "", "/", "", "(", "", ")", "").Replace(s))
 }
 

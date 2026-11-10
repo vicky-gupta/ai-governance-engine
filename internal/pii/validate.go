@@ -6,7 +6,7 @@ import "strings"
 // to the end, turn letters into numbers (A=10 … Z=35), and the result
 // mod 97 must be 1. A random typo fails this almost every time.
 func validIBAN(s string) bool {
-	s = normalize(s)
+	s = Normalize(s)
 	if len(s) < 15 || len(s) > 34 {
 		return false
 	}
@@ -74,7 +74,7 @@ func validDETaxID(s string) bool {
 
 // validESDNI checks the Spanish DNI letter: the number mod 23 picks it.
 func validESDNI(s string) bool {
-	s = normalize(s)
+	s = Normalize(s)
 	if len(s) != 9 {
 		return false
 	}

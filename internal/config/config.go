@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"fmt"
 	"os"
 	"strconv"
@@ -12,6 +13,7 @@ type Config struct {
 	DatabaseURL   string // Postgres connection string
 	ProvidersFile string // path to the provider and model catalog
 	AdminToken    string // protects the /admin API
+	VaultKey      []byte // 32-byte master key for the PII vault
 
 	BlockedTerms []string // requests mentioning any of these are blocked
 	MaxTokens    int      // upper limit for max_tokens on every request
@@ -37,6 +39,12 @@ func Load() (Config, error) {
 	}
 	cfg.MaxTokens = maxTokens
 
+	key, err := base64.StdEncoding.DecodeString(os.Getenv("PII_VAULT_KEY"))
+	if err != nil || len(key) != 32 {
+		return Config{}, fmt.Errorf("PII_VAULT_KEY is required: 32 random bytes, base64-encoded")
+	}
+
+	cfg.VaultKey = key
 	if len(cfg.AdminToken) < 16 {
 		return Config{}, fmt.Errorf("ADMIN_TOKEN is required and must be at least 16 characters")
 	}

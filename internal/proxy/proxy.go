@@ -23,7 +23,16 @@ func New(target *url.URL, apiKey string, log *slog.Logger) http.Handler {
 			// ever sees the gateway's key.
 			r.Out.Header.Set("Authorization", "Bearer "+apiKey)
 		},
-
+		// Providers send their own X-Request-ID. The gateway's ID is the one
+		// callers use to find the audit entry, so the provider's is kept
+		// under another name instead of sending two headers with one name.
+		ModifyResponse: func(resp *http.Response) error {
+			if id := resp.Header.Get("X-Request-ID"); id != "" {
+				resp.Header.Set("X-Upstream-Request-ID", id)
+				resp.Header.Del("X-Request-ID")
+			}
+			return nil
+		},
 		// Send each chunk to the client as soon as it arrives, so
 		// streamed tokens are not held back in a buffer.
 		FlushInterval: -1,
