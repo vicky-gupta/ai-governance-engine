@@ -1,6 +1,17 @@
 # AI Governance Engine
 
-[![CI](https://github.com/vicky-gupta/ai-governance-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/vicky-gupta/ai-governance-engine/actions/workflows/ci.yml)
+<p>
+  <a href="https://github.com/vicky-gupta/ai-governance-engine/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/vicky-gupta/ai-governance-engine/actions/workflows/ci.yml/badge.svg"></a>
+  <img alt="Go version" src="https://img.shields.io/github/go-mod/go-version/vicky-gupta/ai-governance-engine">
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/vicky-gupta/ai-governance-engine"></a>
+  <img alt="Status" src="https://img.shields.io/badge/status-early%20development-orange">
+  <img alt="EU AI Act" src="https://img.shields.io/badge/EU%20AI%20Act-aware-blue">
+  <img alt="GDPR" src="https://img.shields.io/badge/GDPR-aware-blue">
+  <img alt="Policy as code" src="https://img.shields.io/badge/policy--as--code-OPA%20%2F%20Rego-7D9199">
+  <a href="https://github.com/vicky-gupta/ai-governance-engine/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22"><img alt="Good first issues" src="https://img.shields.io/github/issues/vicky-gupta/ai-governance-engine/good%20first%20issue?label=good%20first%20issues&color=7057ff"></a>
+  <img alt="Last commit" src="https://img.shields.io/github/last-commit/vicky-gupta/ai-governance-engine">
+  <a href="https://github.com/vicky-gupta/ai-governance-engine/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/vicky-gupta/ai-governance-engine?style=social"></a>
+</p>
 
 **An open-source AI governance gateway for EU companies.** It sits between your applications and LLM providers, and checks every AI request before it leaves the company: it redacts personal data, keeps high-risk systems on EU-hosted models, applies policy-as-code rules, holds sensitive decisions for human review, and writes every decision to a tamper-evident audit log.
 
@@ -291,4 +302,4 @@ Before opening a pull request, run `gofmt -w .`, `go vet ./...` and `go test ./.
 
 ## License
 
-[LICENSE NAME] — see [LICENSE](LICENSE).
+APACHE 2.0 (Will be added soon)
