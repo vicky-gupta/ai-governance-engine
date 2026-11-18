@@ -17,6 +17,7 @@ import (
 	"github.com/vicky-gupta/ai-governance-engine/internal/config"
 	"github.com/vicky-gupta/ai-governance-engine/internal/db"
 	"github.com/vicky-gupta/ai-governance-engine/internal/pipeline"
+	"github.com/vicky-gupta/ai-governance-engine/internal/policy"
 	"github.com/vicky-gupta/ai-governance-engine/internal/proxy"
 	"github.com/vicky-gupta/ai-governance-engine/internal/registry"
 	"github.com/vicky-gupta/ai-governance-engine/internal/server"
@@ -73,17 +74,24 @@ func run(log *slog.Logger) error {
 	}
 	router := proxy.NewRouter(providers, pipeline.ProviderFrom, log)
 
-	// The governance checks, in the order they run. ModelPolicy goes first:
-	// it rejects unapproved models and chooses the provider. PII redaction
-	// comes next, so every later step only ever sees redacted text.
+	// The rules in policies/*.rego. Checked for changes every 2 seconds;
+	// a version with errors is rejected and the previous one stays active.
+	rules, err := policy.Load(ctx, cfg.PolicyDir, log)
+	if err != nil {
+		return err
+	}
+	go rules.Watch(ctx, 2*time.Second)
+	log.Info("policy loaded", "dir", cfg.PolicyDir, "version", rules.Version())
+
+	// The governance checks, in the order they run. ModelPolicy rejects
+	// unapproved models and chooses the provider. PII redaction comes next,
+	// so the policy (and everything after it) only sees redacted text.
 	checkPipeline := pipeline.New(
 		checks.ModelPolicy{Catalog: cat},
 		checks.PIIRedaction{Vault: piiVault},
-		checks.BlockedTerms{Terms: cfg.BlockedTerms},
-		checks.MaxTokens{Limit: cfg.MaxTokens},
+		checks.Policy{Engine: rules},
 	)
-	log.Info("checks configured", "blocked_terms", cfg.BlockedTerms, "max_tokens", cfg.MaxTokens,
-		"allowed_regions", cat.AllowedRegions)
+	log.Info("checks configured", "allowed_regions", cat.AllowedRegions)
 	requireKey := auth.Middleware(store, log)
 	runChecks := pipeline.Middleware(checkPipeline, auditLog, log)
 

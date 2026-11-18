@@ -52,6 +52,7 @@ func TestComputeHashDetectsEveryField(t *testing.T) {
 		"body hash": func(e *Entry) { e.RequestHash = "y" },
 		"provider":  func(e *Entry) { e.Provider = "mistral" },
 		"region":    func(e *Entry) { e.Region = "eu" },
+		"policy":    func(e *Entry) { e.PolicyVersion = "abc123" },
 	}
 	for name, change := range changes {
 		t.Run(name, func(t *testing.T) {

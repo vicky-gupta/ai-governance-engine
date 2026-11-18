@@ -9,51 +9,12 @@ import (
 	"github.com/vicky-gupta/ai-governance-engine/internal/catalog"
 	"github.com/vicky-gupta/ai-governance-engine/internal/pii"
 	"github.com/vicky-gupta/ai-governance-engine/internal/pipeline"
+	"github.com/vicky-gupta/ai-governance-engine/internal/policy"
 )
 
 // BlockedTerms blocks requests whose messages contain any listed term
 // (case-insensitive). A simple first rule; Module 7 replaces hardcoded
 // rules like this with policy files.
-type BlockedTerms struct {
-	Terms []string
-}
-
-func (BlockedTerms) Name() string { return "blocked_terms" }
-
-func (c BlockedTerms) Check(_ context.Context, req *pipeline.Request) pipeline.Decision {
-	for _, m := range req.Messages {
-		text := strings.ToLower(m.Text())
-		for _, term := range c.Terms {
-			if term != "" && strings.Contains(text, strings.ToLower(term)) {
-				return pipeline.Decision{
-					Action: pipeline.Block,
-					Reason: fmt.Sprintf("message contains blocked term %q", term),
-				}
-			}
-		}
-	}
-	return pipeline.Decision{Action: pipeline.Allow}
-}
-
-// MaxTokens caps how long a response can be, which caps the cost of each
-// call. A missing or larger max_tokens is set to the limit.
-type MaxTokens struct {
-	Limit int
-}
-
-func (MaxTokens) Name() string { return "max_tokens" }
-
-func (c MaxTokens) Check(_ context.Context, req *pipeline.Request) pipeline.Decision {
-	if req.MaxTokens != nil && *req.MaxTokens <= c.Limit {
-		return pipeline.Decision{Action: pipeline.Allow}
-	}
-	limit := c.Limit
-	req.MaxTokens = &limit
-	return pipeline.Decision{
-		Action: pipeline.Modify,
-		Reason: fmt.Sprintf("max_tokens set to %d", c.Limit),
-	}
-}
 
 // ModelPolicy allows only models listed in the catalog, and only in the
 // regions the calling system's risk tier permits. It also chooses which
@@ -124,4 +85,59 @@ func (c PIIRedaction) Check(ctx context.Context, req *pipeline.Request) pipeline
 		}
 	}
 	return pipeline.Decision{Action: pipeline.Modify, Reason: "redacted " + r.Summary()}
+}
+
+// PolicyEngine evaluates the Rego policy. policy.Engine implements it.
+type PolicyEngine interface {
+	Evaluate(ctx context.Context, input map[string]any) (policy.Result, string, error)
+}
+
+// Policy applies the rules in the policies/ folder: deny reasons block the
+// request, hold reasons pause it for human review, and max_tokens caps
+// the answer length. It runs after PII redaction, so the policy only ever
+// sees redacted text.
+type Policy struct {
+	Engine PolicyEngine
+}
+
+func (Policy) Name() string { return "policy" }
+
+func (c Policy) Check(ctx context.Context, req *pipeline.Request) pipeline.Decision {
+	messages := make([]any, 0, len(req.Messages))
+	for _, m := range req.Messages {
+		messages = append(messages, map[string]any{"role": m.Role(), "text": m.Text()})
+	}
+	input := map[string]any{
+		"system": map[string]any{
+			"name":      req.System.Name,
+			"owner":     req.System.Owner,
+			"risk_tier": string(req.System.RiskTier),
+		},
+		"model":    req.Model,
+		"provider": req.Provider,
+		"region":   req.Region,
+		"messages": messages,
+	}
+	if req.MaxTokens != nil {
+		input["max_tokens"] = *req.MaxTokens
+	}
+
+	res, version, err := c.Engine.Evaluate(ctx, input)
+	req.PolicyVersion = version
+	if err != nil {
+		// A policy that can't be evaluated can't approve anything.
+		return pipeline.Decision{Action: pipeline.Block, Reason: "policy evaluation failed"}
+	}
+	if len(res.Deny) > 0 {
+		return pipeline.Decision{Action: pipeline.Block, Reason: strings.Join(res.Deny, "; ")}
+	}
+	if len(res.Hold) > 0 {
+		return pipeline.Decision{Action: pipeline.Hold, Reason: strings.Join(res.Hold, "; ")}
+	}
+	if res.MaxTokens != nil && (req.MaxTokens == nil || *req.MaxTokens > *res.MaxTokens) {
+		limit := *res.MaxTokens
+		req.MaxTokens = &limit
+		return pipeline.Decision{Action: pipeline.Modify, Reason: fmt.Sprintf("max_tokens set to %d by policy", limit)}
+	}
+	return pipeline.Decision{Action: pipeline.Allow}
 }

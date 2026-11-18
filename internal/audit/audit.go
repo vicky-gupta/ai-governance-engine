@@ -23,8 +23,9 @@ type Entry struct {
 	SystemID      string          `json:"ai_system_id"`
 	SystemName    string          `json:"ai_system_name"`
 	Model         string          `json:"model"`
-	Provider      string          `json:"provider,omitempty"` // which provider the request went to
-	Region        string          `json:"region,omitempty"`   // where that provider processes data
+	Provider      string          `json:"provider,omitempty"`       // which provider the request went to
+	Region        string          `json:"region,omitempty"`         // where that provider processes data
+	PolicyVersion string          `json:"policy_version,omitempty"` // which policy files decided
 	Action        string          `json:"action"`
 	Check         string          `json:"check,omitempty"`
 	Reason        string          `json:"reason,omitempty"`
@@ -38,7 +39,8 @@ type Entry struct {
 // ComputeHash returns the entry's hash: SHA-256 over every field except
 // ID and Hash, in a fixed order. Changing any field changes the hash.
 //
-// Fields added after the first version (provider, region) use omitempty:
+// Fields added after the first version (provider, region, policy_version)
+// use omitempty:
 // when they are empty, the bytes are exactly what the old code produced,
 // so entries written before they existed still verify.
 func (e Entry) ComputeHash() string {
@@ -57,10 +59,11 @@ func (e Entry) ComputeHash() string {
 		ForwardedHash string          `json:"forwarded_hash"`
 		Provider      string          `json:"provider,omitempty"`
 		Region        string          `json:"region,omitempty"`
+		PolicyVersion string          `json:"policy_version,omitempty"` // which policy files decided
 	}{
 		e.PrevHash, e.CreatedAt.UTC().Format(time.RFC3339Nano), e.RequestID, e.SystemID,
 		e.SystemName, e.Model, e.Action, e.Check, e.Reason, e.Trace, e.RequestHash, e.ForwardedHash,
-		e.Provider, e.Region,
+		e.Provider, e.Region, e.PolicyVersion,
 	})
 	return HashBytes(b)
 }

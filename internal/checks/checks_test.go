@@ -3,12 +3,15 @@ package checks
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"strings"
 	"testing"
 
 	"github.com/vicky-gupta/ai-governance-engine/internal/catalog"
 	"github.com/vicky-gupta/ai-governance-engine/internal/pii"
 	"github.com/vicky-gupta/ai-governance-engine/internal/pipeline"
+	"github.com/vicky-gupta/ai-governance-engine/internal/policy"
 	"github.com/vicky-gupta/ai-governance-engine/internal/registry"
 )
 
@@ -21,49 +24,6 @@ func request(t *testing.T, body string) *pipeline.Request {
 	return req
 }
 
-func TestBlockedTerms(t *testing.T) {
-	c := BlockedTerms{Terms: []string{"Project Falcon", "salary"}}
-	ctx := context.Background()
-
-	clean := request(t, `{"model":"m","messages":[{"role":"user","content":"What is the weather?"}]}`)
-	if d := c.Check(ctx, clean); d.Action != pipeline.Allow {
-		t.Errorf("clean message: %s, want allow", d.Action)
-	}
-
-	// Case-insensitive, and found in any message.
-	dirty := request(t, `{"model":"m","messages":[
-		{"role":"system","content":"You are helpful."},
-		{"role":"user","content":"Summarise the project falcon roadmap"}]}`)
-	if d := c.Check(ctx, dirty); d.Action != pipeline.Block {
-		t.Errorf("blocked term: %s, want block", d.Action)
-	}
-}
-
-func TestMaxTokens(t *testing.T) {
-	c := MaxTokens{Limit: 1000}
-	ctx := context.Background()
-
-	cases := []struct {
-		name      string
-		body      string
-		action    pipeline.Action
-		wantLimit int
-	}{
-		{"under limit", `{"model":"m","max_tokens":200,"messages":[{"role":"user","content":"hi"}]}`, pipeline.Allow, 200},
-		{"at limit", `{"model":"m","max_tokens":1000,"messages":[{"role":"user","content":"hi"}]}`, pipeline.Allow, 1000},
-		{"over limit", `{"model":"m","max_tokens":5000,"messages":[{"role":"user","content":"hi"}]}`, pipeline.Modify, 1000},
-		{"missing", `{"model":"m","messages":[{"role":"user","content":"hi"}]}`, pipeline.Modify, 1000},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			req := request(t, tc.body)
-			d := c.Check(ctx, req)
-			if d.Action != tc.action || *req.MaxTokens != tc.wantLimit {
-				t.Errorf("action=%s max_tokens=%d, want %s and %d", d.Action, *req.MaxTokens, tc.action, tc.wantLimit)
-			}
-		})
-	}
-}
 func TestModelPolicy(t *testing.T) {
 	cat, err := catalog.Parse([]byte(`{
 		"providers": [
@@ -173,6 +133,59 @@ func TestPIIRedactionBlocksWhenVaultFails(t *testing.T) {
 	v := &fakeVault{err: errors.New("database down")}
 	req := request(t, `{"model":"m","messages":[{"role":"user","content":"Mail anna@example.com"}]}`)
 	if d := (PIIRedaction{Vault: v}).Check(context.Background(), req); d.Action != pipeline.Block {
+		t.Errorf("action = %s, want block", d.Action)
+	}
+}
+func TestPolicyWithRealRules(t *testing.T) {
+	engine, err := policy.Load(context.Background(), "../../policies", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := Policy{Engine: engine}
+
+	cases := []struct {
+		name          string
+		tier          registry.RiskTier
+		body          string
+		action        pipeline.Action
+		wantMaxTokens int
+	}{
+		{"within limit", registry.RiskLimited,
+			`{"model":"m","max_tokens":200,"messages":[{"role":"user","content":"hi"}]}`, pipeline.Allow, 200},
+		{"no limit set", registry.RiskLimited,
+			`{"model":"m","messages":[{"role":"user","content":"hi"}]}`, pipeline.Modify, 4096},
+		{"high risk gets a lower limit", registry.RiskHigh,
+			`{"model":"m","max_tokens":3000,"messages":[{"role":"user","content":"hi"}]}`, pipeline.Modify, 1024},
+		{"blocked term", registry.RiskLimited,
+			`{"model":"m","max_tokens":200,"messages":[{"role":"user","content":"Our salary bands?"}]}`, pipeline.Block, 200},
+		{"credit decision", registry.RiskHigh,
+			`{"model":"m","max_tokens":200,"messages":[{"role":"user","content":"Reject the loan application"}]}`, pipeline.Hold, 200},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := request(t, tc.body)
+			req.System = registry.System{Name: "test", RiskTier: tc.tier}
+			d := c.Check(context.Background(), req)
+			if d.Action != tc.action || *req.MaxTokens != tc.wantMaxTokens {
+				t.Errorf("action=%s max_tokens=%d (%s), want %s and %d", d.Action, *req.MaxTokens, d.Reason, tc.action, tc.wantMaxTokens)
+			}
+			if req.PolicyVersion != engine.Version() {
+				t.Errorf("PolicyVersion = %q, want %q", req.PolicyVersion, engine.Version())
+			}
+		})
+	}
+}
+
+// brokenEngine always fails, like a policy that errors at runtime.
+type brokenEngine struct{}
+
+func (brokenEngine) Evaluate(context.Context, map[string]any) (policy.Result, string, error) {
+	return policy.Result{}, "v-broken", errors.New("boom")
+}
+
+func TestPolicyFailsClosed(t *testing.T) {
+	req := request(t, `{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
+	if d := (Policy{Engine: brokenEngine{}}).Check(context.Background(), req); d.Action != pipeline.Block {
 		t.Errorf("action = %s, want block", d.Action)
 	}
 }

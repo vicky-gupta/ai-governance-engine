@@ -1,0 +1,5 @@
+{
+  "model": "openai/gpt-oss-120b",
+  "max_tokens": 100,
+  "messages": [ { "role": "user", "content": "What is this year's bonus plan?" } ]
+}

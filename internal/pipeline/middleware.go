@@ -96,17 +96,18 @@ func Middleware(p *Pipeline, rec Recorder, log *slog.Logger) func(http.Handler) 
 
 			trace, _ := json.Marshal(res.Trace)
 			entry := audit.Entry{
-				RequestID:   requestID,
-				SystemID:    sys.ID,
-				SystemName:  sys.Name,
-				Model:       req.Model,
-				Provider:    req.Provider,
-				Region:      req.Region,
-				Action:      string(res.Action),
-				Check:       res.Check,
-				Reason:      res.Reason,
-				Trace:       trace,
-				RequestHash: audit.HashBytes(body),
+				RequestID:     requestID,
+				SystemID:      sys.ID,
+				SystemName:    sys.Name,
+				Model:         req.Model,
+				Provider:      req.Provider,
+				Region:        req.Region,
+				Action:        string(res.Action),
+				Check:         res.Check,
+				Reason:        res.Reason,
+				Trace:         trace,
+				RequestHash:   audit.HashBytes(body),
+				PolicyVersion: req.PolicyVersion,
 			}
 			if res.Action == Allow || res.Action == Modify {
 				entry.ForwardedHash = audit.HashBytes(forward)

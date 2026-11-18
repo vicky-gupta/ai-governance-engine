@@ -1,0 +1,5 @@
+{
+  "model": "openai/gpt-oss-120b",
+  "max_tokens": 3000,
+  "messages": [ { "role": "user", "content": "Please reject the loan application from anna@example.com" } ]
+}

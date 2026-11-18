@@ -25,7 +25,7 @@ func NewStore(pool *pgxpool.Pool) *Store {
 const appendLockID = 727275
 
 const columns = `id, created_at, request_id, ai_system_id, ai_system_name, model, action,
-	check_name, reason, trace, request_hash, forwarded_hash, prev_hash, hash, provider, region`
+	check_name, reason, trace, request_hash, forwarded_hash, prev_hash, hash, provider, region, policy_version`
 
 // Record appends an entry to the end of the chain.
 func (s *Store) Record(ctx context.Context, e Entry) error {
@@ -64,11 +64,13 @@ func (s *Store) Append(ctx context.Context, e Entry) (Entry, error) {
 
 	err = tx.QueryRow(ctx, `
 		INSERT INTO audit_log (created_at, request_id, ai_system_id, ai_system_name, model, action,
-			check_name, reason, trace, request_hash, forwarded_hash, prev_hash, hash, provider, region)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+			check_name, reason, trace, request_hash, forwarded_hash, prev_hash, hash, provider, region,
+			policy_version)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 		RETURNING id`,
 		e.CreatedAt, e.RequestID, e.SystemID, e.SystemName, e.Model, e.Action,
 		e.Check, e.Reason, e.Trace, e.RequestHash, e.ForwardedHash, e.PrevHash, e.Hash, e.Provider, e.Region,
+		e.PolicyVersion,
 	).Scan(&e.ID)
 	if err != nil {
 		return Entry{}, err
@@ -139,7 +141,7 @@ func scanEntry(row pgx.Row) (Entry, error) {
 	var e Entry
 	err := row.Scan(&e.ID, &e.CreatedAt, &e.RequestID, &e.SystemID, &e.SystemName, &e.Model,
 		&e.Action, &e.Check, &e.Reason, &e.Trace, &e.RequestHash, &e.ForwardedHash, &e.PrevHash, &e.Hash,
-		&e.Provider, &e.Region)
+		&e.Provider, &e.Region, &e.PolicyVersion)
 	if err != nil {
 		return Entry{}, fmt.Errorf("audit: %w", err)
 	}

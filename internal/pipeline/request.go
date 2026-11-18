@@ -22,8 +22,10 @@ type Request struct {
 	// sent to the provider.
 	Provider string
 	Region   string
-
-	fields map[string]json.RawMessage
+	// Which version of the policy files judged this request. Set by the
+	// policy check; recorded in the audit log.
+	PolicyVersion string
+	fields        map[string]json.RawMessage
 }
 
 // Message is one chat message. It is kept as raw JSON fields so that
