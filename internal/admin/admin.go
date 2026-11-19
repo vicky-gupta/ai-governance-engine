@@ -27,6 +27,7 @@ type Store interface {
 	ListSystems(ctx context.Context) ([]registry.System, error)
 	CreateKey(ctx context.Context, systemID string) (string, registry.Key, error)
 	RevokeKey(ctx context.Context, keyID string) error
+	SetRateLimit(ctx context.Context, systemID string, rpm *int) error
 }
 
 type AuditLog interface {
@@ -57,6 +58,8 @@ func New(store Store, auditLog AuditLog, piiVault PIIVault, token string, log *s
 	mux.HandleFunc("GET /admin/systems", h.listSystems)
 	mux.HandleFunc("POST /admin/systems/{id}/keys", h.createKey)
 	mux.HandleFunc("DELETE /admin/keys/{id}", h.revokeKey)
+	mux.HandleFunc("PUT /admin/systems/{id}/rate-limit", h.setRateLimit)
+	mux.HandleFunc("DELETE /admin/systems/{id}/rate-limit", h.resetRateLimit)
 	mux.HandleFunc("GET /admin/audit", h.listAudit)
 	mux.HandleFunc("GET /admin/audit/verify", h.verifyAudit)
 	mux.HandleFunc("GET /admin/pii/{request_id}", h.revealPII)
@@ -116,6 +119,53 @@ func (h *handler) createSystem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, sys)
+}
+
+type rateLimitRequest struct {
+	RequestsPerMinute int `json:"requests_per_minute"`
+}
+
+// setRateLimit gives one AI system its own requests-per-minute limit.
+func (h *handler) setRateLimit(w http.ResponseWriter, r *http.Request) {
+	var req rateLimitRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<16)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		apierr.Write(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON: "+err.Error())
+		return
+	}
+	if req.RequestsPerMinute < 1 {
+		apierr.Write(w, http.StatusBadRequest, "invalid_request_error", "requests_per_minute must be at least 1")
+		return
+	}
+	h.updateRateLimit(w, r, &req.RequestsPerMinute,
+		fmt.Sprintf("rate limit for system %s set to %d requests per minute", r.PathValue("id"), req.RequestsPerMinute))
+}
+
+// resetRateLimit puts an AI system back on the gateway's default limit.
+func (h *handler) resetRateLimit(w http.ResponseWriter, r *http.Request) {
+	h.updateRateLimit(w, r, nil,
+		fmt.Sprintf("rate limit for system %s reset to the default", r.PathValue("id")))
+}
+
+func (h *handler) updateRateLimit(w http.ResponseWriter, r *http.Request, rpm *int, reason string) {
+	err := h.store.SetRateLimit(r.Context(), r.PathValue("id"), rpm)
+	if errors.Is(err, registry.ErrNotFound) {
+		apierr.Write(w, http.StatusNotFound, "invalid_request_error", "AI system not found")
+		return
+	}
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	if err := h.recordAdminAction(r.Context(), "admin.set_rate_limit", reason); err != nil {
+		h.log.Error("rate limit changed but not audited", "error", err)
+		apierr.Write(w, http.StatusInternalServerError, "gateway_error",
+			"rate limit changed, but the audit record failed")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *handler) listAudit(w http.ResponseWriter, r *http.Request) {

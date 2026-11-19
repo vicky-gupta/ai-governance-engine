@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
+	"strconv"
 )
 
 type Config struct {
@@ -13,6 +14,8 @@ type Config struct {
 	AdminToken    string // protects the /admin API
 	VaultKey      []byte // 32-byte master key for the PII vault
 	PolicyDir     string // folder with the Rego policy files
+	RedisURL      string // Redis for the rate limit counters
+	DefaultRPM    int    // requests per minute for systems without their own limit
 }
 
 func Load() (Config, error) {
@@ -22,7 +25,14 @@ func Load() (Config, error) {
 		ProvidersFile: getEnv("PROVIDERS_FILE", "providers.json"),
 		PolicyDir:     getEnv("POLICY_DIR", "policies"),
 		AdminToken:    os.Getenv("ADMIN_TOKEN"),
+		RedisURL:      getEnv("REDIS_URL", "redis://localhost:6379/0"),
 	}
+
+	rpm, err := strconv.Atoi(getEnv("DEFAULT_RATE_LIMIT_RPM", "60"))
+	if err != nil || rpm < 1 {
+		return Config{}, fmt.Errorf("DEFAULT_RATE_LIMIT_RPM must be a whole number of at least 1")
+	}
+	cfg.DefaultRPM = rpm
 
 	key, err := base64.StdEncoding.DecodeString(os.Getenv("PII_VAULT_KEY"))
 	if err != nil || len(key) != 32 {

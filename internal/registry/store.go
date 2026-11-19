@@ -35,7 +35,7 @@ func (s *Store) CreateSystem(ctx context.Context, sys System) (System, error) {
 // ListSystems returns all AI systems, oldest first.
 func (s *Store) ListSystems(ctx context.Context) ([]System, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id::text, name, owner, purpose, risk_tier, status, created_at
+		SELECT id::text, name, owner, purpose, risk_tier, status, created_at, rate_limit_rpm
 		FROM ai_systems ORDER BY created_at`)
 	if err != nil {
 		return nil, err
@@ -46,7 +46,7 @@ func (s *Store) ListSystems(ctx context.Context) ([]System, error) {
 	for rows.Next() {
 		var sys System
 		if err := rows.Scan(&sys.ID, &sys.Name, &sys.Owner, &sys.Purpose,
-			&sys.RiskTier, &sys.Status, &sys.CreatedAt); err != nil {
+			&sys.RiskTier, &sys.Status, &sys.CreatedAt, &sys.RateLimitRPM); err != nil {
 			return nil, err
 		}
 		systems = append(systems, sys)
@@ -98,16 +98,32 @@ func (s *Store) RevokeKey(ctx context.Context, keyID string) error {
 func (s *Store) SystemByKey(ctx context.Context, key string) (System, error) {
 	var sys System
 	err := s.pool.QueryRow(ctx, `
-		SELECT s.id::text, s.name, s.owner, s.purpose, s.risk_tier, s.status, s.created_at
-		FROM api_keys k
-		JOIN ai_systems s ON s.id = k.ai_system_id
-		WHERE k.key_hash = $1 AND k.revoked_at IS NULL`,
+	SELECT s.id::text, s.name, s.owner, s.purpose, s.risk_tier, s.status, s.created_at,
+		s.rate_limit_rpm
+	FROM api_keys k JOIN ai_systems s ON s.id = k.ai_system_id
+	WHERE k.key_hash = $1 AND k.revoked_at IS NULL`,
 		HashKey(key),
-	).Scan(&sys.ID, &sys.Name, &sys.Owner, &sys.Purpose, &sys.RiskTier, &sys.Status, &sys.CreatedAt)
+	).Scan(&sys.ID, &sys.Name, &sys.Owner, &sys.Purpose, &sys.RiskTier, &sys.Status, &sys.CreatedAt, &sys.RateLimitRPM)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return System{}, ErrNotFound
 	}
 	return sys, err
+}
+
+// SetRateLimit sets a system's requests-per-minute limit. nil goes back
+// to the gateway's default.
+func (s *Store) SetRateLimit(ctx context.Context, systemID string, rpm *int) error {
+	tag, err := s.pool.Exec(ctx, "UPDATE ai_systems SET rate_limit_rpm = $2 WHERE id = $1", systemID, rpm)
+	if isCode(err, "22P02") {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // isCode reports whether err is a Postgres error with the given code.

@@ -37,6 +37,10 @@ type System struct {
 	RiskTier  RiskTier  `json:"risk_tier"`
 	Status    string    `json:"status"`
 	CreatedAt time.Time `json:"created_at"`
+
+	// Requests per minute this system may make. nil means the gateway's
+	// default limit applies.
+	RateLimitRPM *int `json:"rate_limit_rpm"`
 }
 
 // Key describes a gateway API key. It never contains the key itself.

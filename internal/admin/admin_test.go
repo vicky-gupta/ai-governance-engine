@@ -19,7 +19,8 @@ import (
 
 // fakeStore records what the handler asked for, with no database.
 type fakeStore struct {
-	created registry.System
+	created   registry.System
+	rateLimit *int // what the last SetRateLimit asked for
 }
 
 func (f *fakeStore) CreateSystem(_ context.Context, sys registry.System) (registry.System, error) {
@@ -46,6 +47,14 @@ func (f *fakeStore) RevokeKey(_ context.Context, id string) error {
 	if id != "key-1" {
 		return registry.ErrNotFound
 	}
+	return nil
+}
+
+func (f *fakeStore) SetRateLimit(_ context.Context, id string, rpm *int) error {
+	if id != "sys-1" {
+		return registry.ErrNotFound
+	}
+	f.rateLimit = rpm
 	return nil
 }
 
@@ -264,6 +273,36 @@ func TestErasePII(t *testing.T) {
 	for _, body := range []string{`{"kind":"PASSPORT","value":"x"}`, `{"kind":"EMAIL","value":""}`, `{"kind":"EMAIL","value":"a","extra":1}`} {
 		if rec := do(t, h, "POST", "/admin/pii/erase", body, token); rec.Code != http.StatusBadRequest {
 			t.Errorf("%s: status=%d, want 400", body, rec.Code)
+		}
+	}
+}
+
+func TestRateLimitEndpoints(t *testing.T) {
+	h, store, auditLog := newHandlerWithAudit()
+
+	rec := do(t, h, "PUT", "/admin/systems/sys-1/rate-limit", `{"requests_per_minute": 120}`, token)
+	if rec.Code != http.StatusNoContent || store.rateLimit == nil || *store.rateLimit != 120 {
+		t.Fatalf("set: status=%d limit=%v, want 204 and 120", rec.Code, store.rateLimit)
+	}
+	if len(auditLog.recorded) != 1 || auditLog.recorded[0].Action != "admin.set_rate_limit" {
+		t.Errorf("recorded = %+v, want one admin.set_rate_limit entry", auditLog.recorded)
+	}
+
+	if rec := do(t, h, "DELETE", "/admin/systems/sys-1/rate-limit", "", token); rec.Code != http.StatusNoContent || store.rateLimit != nil {
+		t.Errorf("reset: status=%d limit=%v, want 204 and nil", rec.Code, store.rateLimit)
+	}
+
+	for _, tc := range []struct {
+		name, path, body string
+		want             int
+	}{
+		{"zero", "/admin/systems/sys-1/rate-limit", `{"requests_per_minute": 0}`, http.StatusBadRequest},
+		{"negative", "/admin/systems/sys-1/rate-limit", `{"requests_per_minute": -5}`, http.StatusBadRequest},
+		{"unknown field", "/admin/systems/sys-1/rate-limit", `{"rpm": 10}`, http.StatusBadRequest},
+		{"unknown system", "/admin/systems/nope/rate-limit", `{"requests_per_minute": 10}`, http.StatusNotFound},
+	} {
+		if rec := do(t, h, "PUT", tc.path, tc.body, token); rec.Code != tc.want {
+			t.Errorf("%s: status = %d, want %d", tc.name, rec.Code, tc.want)
 		}
 	}
 }

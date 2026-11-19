@@ -3,11 +3,15 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"time"
+
+	"github.com/redis/go-redis/v9"
+	"github.com/vicky-gupta/ai-governance-engine/internal/ratelimit"
 
 	"github.com/vicky-gupta/ai-governance-engine/internal/admin"
 	"github.com/vicky-gupta/ai-governance-engine/internal/audit"
@@ -92,7 +96,30 @@ func run(log *slog.Logger) error {
 		checks.Policy{Engine: rules},
 	)
 	log.Info("checks configured", "allowed_regions", cat.AllowedRegions)
+	// Rate limits: counters live in Redis, shared by every gateway instance.
+	// If Redis is down at startup we still start; requests are then
+	// allowed without a limit check (see ratelimit.Limiter).
+	redisOpts, err := redis.ParseURL(cfg.RedisURL)
+	if err != nil {
+		return fmt.Errorf("REDIS_URL: %w", err)
+	}
+	rdb := redis.NewClient(redisOpts)
+	defer rdb.Close()
+	pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	if err := rdb.Ping(pingCtx).Err(); err != nil {
+		log.Warn("redis unreachable; rate limits are not enforced until it is back", "error", err)
+	} else {
+		log.Info("redis ready", "default_rate_limit_rpm", cfg.DefaultRPM)
+	}
+	cancel()
+	limiter := &ratelimit.Limiter{
+		Counter:    ratelimit.NewRedisCounter(rdb),
+		DefaultRPM: cfg.DefaultRPM,
+		Log:        log,
+	}
+
 	requireKey := auth.Middleware(store, log)
+	limit := limiter.Middleware
 	runChecks := pipeline.Middleware(checkPipeline, auditLog, log)
 
 	srv := &http.Server{
@@ -100,8 +127,8 @@ func run(log *slog.Logger) error {
 		Handler: server.New(server.Deps{
 			Log:    log,
 			DB:     pool,
-			Chat:   requireKey(runChecks(router)),
-			Models: requireKey(catalog.ModelsHandler(cat)),
+			Chat:   requireKey(limit(runChecks(router))),
+			Models: requireKey(limit(catalog.ModelsHandler(cat))),
 			Admin:  admin.New(store, auditLog, piiVault, cfg.AdminToken, log),
 		}).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,

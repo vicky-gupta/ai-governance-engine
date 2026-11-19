@@ -88,3 +88,41 @@ func TestCreateKeyUnknownSystem(t *testing.T) {
 		}
 	}
 }
+
+func TestSetRateLimit(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	sys, err := s.CreateSystem(ctx, System{Name: "busy-bot", Owner: "x", Purpose: "x", RiskTier: RiskMinimal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, _, err := s.CreateKey(ctx, sys.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got, _ := s.SystemByKey(ctx, key); got.RateLimitRPM != nil {
+		t.Errorf("new system has limit %v, want nil (the default)", *got.RateLimitRPM)
+	}
+
+	limit := 120
+	if err := s.SetRateLimit(ctx, sys.ID, &limit); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.SystemByKey(ctx, key); got.RateLimitRPM == nil || *got.RateLimitRPM != 120 {
+		t.Errorf("after setting: %v, want 120", got.RateLimitRPM)
+	}
+
+	if err := s.SetRateLimit(ctx, sys.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.SystemByKey(ctx, key); got.RateLimitRPM != nil {
+		t.Errorf("after reset: %v, want nil", *got.RateLimitRPM)
+	}
+
+	for _, id := range []string{"00000000-0000-0000-0000-000000000000", "not-a-uuid"} {
+		if err := s.SetRateLimit(ctx, id, &limit); !errors.Is(err, ErrNotFound) {
+			t.Errorf("SetRateLimit(%q): err = %v, want ErrNotFound", id, err)
+		}
+	}
+}
