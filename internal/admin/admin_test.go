@@ -10,17 +10,38 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/vicky-gupta/ai-governance-engine/internal/audit"
 	"github.com/vicky-gupta/ai-governance-engine/internal/pii"
 	"github.com/vicky-gupta/ai-governance-engine/internal/registry"
+	"github.com/vicky-gupta/ai-governance-engine/internal/usage"
 	"github.com/vicky-gupta/ai-governance-engine/internal/vault"
 )
 
 // fakeStore records what the handler asked for, with no database.
 type fakeStore struct {
 	created   registry.System
-	rateLimit *int // what the last SetRateLimit asked for
+	rateLimit *int   // what the last SetRateLimit asked for
+	budget    *int64 // what the last SetMonthlyTokenBudget asked for
+}
+
+func (f *fakeStore) SetTokenBudget(_ context.Context, id string, tokens *int64) error {
+	if id != "sys-1" {
+		return registry.ErrNotFound
+	}
+	f.budget = tokens
+	return nil
+}
+
+// fakeUsage returns one canned row and remembers which month was asked for.
+type fakeUsage struct {
+	gotMonth time.Time
+}
+
+func (f *fakeUsage) Summary(_ context.Context, month time.Time) ([]usage.SystemUsage, error) {
+	f.gotMonth = month
+	return []usage.SystemUsage{{SystemID: "sys-1", SystemName: "support-bot", Requests: 2, TotalTokens: 84}}, nil
 }
 
 func (f *fakeStore) CreateSystem(_ context.Context, sys registry.System) (registry.System, error) {
@@ -108,7 +129,7 @@ func newHandlerWithAudit() (http.Handler, *fakeStore, *fakeAudit) {
 
 func newHandlerWithVault() (http.Handler, *fakeStore, *fakeAudit, *fakePIIVault) {
 	store, auditLog, v := &fakeStore{}, &fakeAudit{}, &fakePIIVault{}
-	return New(store, auditLog, v, token, slog.New(slog.NewTextHandler(io.Discard, nil))), store, auditLog, v
+	return New(store, auditLog, v, &fakeUsage{}, token, slog.New(slog.NewTextHandler(io.Discard, nil))), store, auditLog, v
 }
 
 // fakePIIVault holds one request's values.
@@ -304,5 +325,41 @@ func TestRateLimitEndpoints(t *testing.T) {
 		if rec := do(t, h, "PUT", tc.path, tc.body, token); rec.Code != tc.want {
 			t.Errorf("%s: status = %d, want %d", tc.name, rec.Code, tc.want)
 		}
+	}
+}
+func TestTokenBudgetEndpoints(t *testing.T) {
+	h, store, auditLog := newHandlerWithAudit()
+
+	rec := do(t, h, "PUT", "/admin/systems/sys-1/token-budget", `{"monthly_tokens": 5000000}`, token)
+	if rec.Code != http.StatusNoContent || store.budget == nil || *store.budget != 5000000 {
+		t.Fatalf("set: status=%d budget=%v, want 204 and 5000000", rec.Code, store.budget)
+	}
+	if len(auditLog.recorded) != 1 || auditLog.recorded[0].Action != "admin.set_token_budget" {
+		t.Errorf("recorded = %+v, want one admin.set_token_budget entry", auditLog.recorded)
+	}
+	if rec := do(t, h, "DELETE", "/admin/systems/sys-1/token-budget", "", token); rec.Code != http.StatusNoContent || store.budget != nil {
+		t.Errorf("remove: status=%d budget=%v, want 204 and nil", rec.Code, store.budget)
+	}
+	if rec := do(t, h, "PUT", "/admin/systems/sys-1/token-budget", `{"monthly_tokens": 0}`, token); rec.Code != http.StatusBadRequest {
+		t.Errorf("zero: status = %d, want 400", rec.Code)
+	}
+	if rec := do(t, h, "PUT", "/admin/systems/nope/token-budget", `{"monthly_tokens": 10}`, token); rec.Code != http.StatusNotFound {
+		t.Errorf("unknown system: status = %d, want 404", rec.Code)
+	}
+}
+
+func TestUsageSummary(t *testing.T) {
+	store, auditLog, v, u := &fakeStore{}, &fakeAudit{}, &fakePIIVault{}, &fakeUsage{}
+	h := New(store, auditLog, v, u, token, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	rec := do(t, h, "GET", "/admin/usage?month=2026-10", "", token)
+	if rec.Code != http.StatusOK || u.gotMonth.Month() != time.October {
+		t.Fatalf("status=%d month=%v, want 200 and October", rec.Code, u.gotMonth)
+	}
+	if !strings.Contains(rec.Body.String(), `"total_tokens":84`) || !strings.Contains(rec.Body.String(), `"month":"2026-10"`) {
+		t.Errorf("body = %s", rec.Body)
+	}
+	if rec := do(t, h, "GET", "/admin/usage?month=October", "", token); rec.Code != http.StatusBadRequest {
+		t.Errorf("bad month: status = %d, want 400", rec.Code)
 	}
 }

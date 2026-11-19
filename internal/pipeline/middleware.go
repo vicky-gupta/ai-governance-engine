@@ -31,6 +31,15 @@ func ProviderFrom(r *http.Request) string {
 	return p
 }
 
+type requestIDKey struct{}
+
+// RequestIDFrom returns the gateway's ID for this request, the same one
+// that is in the audit log and the X-Request-ID header.
+func RequestIDFrom(r *http.Request) string {
+	id, _ := r.Context().Value(requestIDKey{}).(string)
+	return id
+}
+
 // maxBodyBytes limits request size. Chat requests with long histories can
 // be large, but 10 MB is far beyond any normal one.
 const maxBodyBytes = 10 << 20
@@ -138,7 +147,9 @@ func Middleware(p *Pipeline, rec Recorder, log *slog.Logger) func(http.Handler) 
 			// The body was consumed above, so give the next handler a fresh
 			// reader over the (possibly modified) bytes.
 			r.Body = io.NopCloser(bytes.NewReader(forward))
-			r = r.WithContext(context.WithValue(r.Context(), providerKey{}, req.Provider))
+			ctx := context.WithValue(r.Context(), providerKey{}, req.Provider)
+			ctx = context.WithValue(ctx, requestIDKey{}, requestID)
+			r = r.WithContext(ctx)
 			r.Body = io.NopCloser(bytes.NewReader(forward))
 			r.ContentLength = int64(len(forward))
 			r.Header.Set("Content-Length", strconv.Itoa(len(forward)))

@@ -5,11 +5,13 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/vicky-gupta/ai-governance-engine/internal/catalog"
 	"github.com/vicky-gupta/ai-governance-engine/internal/pii"
 	"github.com/vicky-gupta/ai-governance-engine/internal/pipeline"
 	"github.com/vicky-gupta/ai-governance-engine/internal/policy"
+	"github.com/vicky-gupta/ai-governance-engine/internal/usage"
 )
 
 // BlockedTerms blocks requests whose messages contain any listed term
@@ -138,6 +140,47 @@ func (c Policy) Check(ctx context.Context, req *pipeline.Request) pipeline.Decis
 		limit := *res.MaxTokens
 		req.MaxTokens = &limit
 		return pipeline.Decision{Action: pipeline.Modify, Reason: fmt.Sprintf("max_tokens set to %d by policy", limit)}
+	}
+	return pipeline.Decision{Action: pipeline.Allow}
+}
+
+// UsageReader tells how many tokens a system has used this month.
+type UsageReader interface {
+	UsedThisMonth(ctx context.Context, systemID string, now time.Time) (int64, error)
+}
+
+// TokenBudget blocks a system that has used up its monthly token budget.
+// It also makes sure streamed responses report their token usage, so
+// every request can be metered.
+type TokenBudget struct {
+	Usage UsageReader
+	Now   func() time.Time // nil means time.Now; tests set a fixed clock
+}
+
+func (TokenBudget) Name() string { return "token_budget" }
+
+func (c TokenBudget) Check(ctx context.Context, req *pipeline.Request) pipeline.Decision {
+	if budget := req.System.MonthlyTokenBudget; budget != nil {
+		now := time.Now()
+		if c.Now != nil {
+			now = c.Now()
+		}
+		used, err := c.Usage.UsedThisMonth(ctx, req.System.ID, now)
+		if err != nil {
+			// Like every check in the pipeline: when unsure, block.
+			return pipeline.Decision{Action: pipeline.Block, Reason: "token budget could not be checked"}
+		}
+		if used >= *budget {
+			return pipeline.Decision{
+				Action: pipeline.Block,
+				Reason: fmt.Sprintf("monthly token budget of %d used up (%d used); it resets on %s",
+					*budget, used, usage.MonthStart(now).AddDate(0, 1, 0).Format("2 January 2006")),
+			}
+		}
+	}
+
+	if req.Stream() && req.RequestStreamUsage() {
+		return pipeline.Decision{Action: pipeline.Modify, Reason: "usage reporting turned on for the stream"}
 	}
 	return pipeline.Decision{Action: pipeline.Allow}
 }

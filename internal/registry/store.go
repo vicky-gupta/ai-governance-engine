@@ -35,7 +35,7 @@ func (s *Store) CreateSystem(ctx context.Context, sys System) (System, error) {
 // ListSystems returns all AI systems, oldest first.
 func (s *Store) ListSystems(ctx context.Context) ([]System, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id::text, name, owner, purpose, risk_tier, status, created_at, rate_limit_rpm
+		SELECT id::text, name, owner, purpose, risk_tier, status, created_at, rate_limit_rpm, monthly_token_budget
 		FROM ai_systems ORDER BY created_at`)
 	if err != nil {
 		return nil, err
@@ -46,7 +46,7 @@ func (s *Store) ListSystems(ctx context.Context) ([]System, error) {
 	for rows.Next() {
 		var sys System
 		if err := rows.Scan(&sys.ID, &sys.Name, &sys.Owner, &sys.Purpose,
-			&sys.RiskTier, &sys.Status, &sys.CreatedAt, &sys.RateLimitRPM); err != nil {
+			&sys.RiskTier, &sys.Status, &sys.CreatedAt, &sys.RateLimitRPM, &sys.MonthlyTokenBudget); err != nil {
 			return nil, err
 		}
 		systems = append(systems, sys)
@@ -99,11 +99,11 @@ func (s *Store) SystemByKey(ctx context.Context, key string) (System, error) {
 	var sys System
 	err := s.pool.QueryRow(ctx, `
 	SELECT s.id::text, s.name, s.owner, s.purpose, s.risk_tier, s.status, s.created_at,
-		s.rate_limit_rpm
+		s.rate_limit_rpm, s.monthly_token_budget
 	FROM api_keys k JOIN ai_systems s ON s.id = k.ai_system_id
 	WHERE k.key_hash = $1 AND k.revoked_at IS NULL`,
 		HashKey(key),
-	).Scan(&sys.ID, &sys.Name, &sys.Owner, &sys.Purpose, &sys.RiskTier, &sys.Status, &sys.CreatedAt, &sys.RateLimitRPM)
+	).Scan(&sys.ID, &sys.Name, &sys.Owner, &sys.Purpose, &sys.RiskTier, &sys.Status, &sys.CreatedAt, &sys.RateLimitRPM, &sys.MonthlyTokenBudget)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return System{}, ErrNotFound
 	}
@@ -114,6 +114,21 @@ func (s *Store) SystemByKey(ctx context.Context, key string) (System, error) {
 // to the gateway's default.
 func (s *Store) SetRateLimit(ctx context.Context, systemID string, rpm *int) error {
 	tag, err := s.pool.Exec(ctx, "UPDATE ai_systems SET rate_limit_rpm = $2 WHERE id = $1", systemID, rpm)
+	if isCode(err, "22P02") {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetTokenBudget sets a system's monthly token budget. nil removes it.
+func (s *Store) SetTokenBudget(ctx context.Context, systemID string, tokens *int64) error {
+	tag, err := s.pool.Exec(ctx, "UPDATE ai_systems SET monthly_token_budget = $2 WHERE id = $1", systemID, tokens)
 	if isCode(err, "22P02") {
 		return ErrNotFound
 	}

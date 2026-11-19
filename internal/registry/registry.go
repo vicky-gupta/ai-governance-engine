@@ -41,6 +41,9 @@ type System struct {
 	// Requests per minute this system may make. nil means the gateway's
 	// default limit applies.
 	RateLimitRPM *int `json:"rate_limit_rpm"`
+	// Tokens this system may use per calendar month (UTC). nil means no
+	// budget.
+	MonthlyTokenBudget *int64 `json:"monthly_token_budget"`
 }
 
 // Key describes a gateway API key. It never contains the key itself.

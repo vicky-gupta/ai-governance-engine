@@ -150,3 +150,29 @@ func (r *Request) Encode() ([]byte, error) {
 	}
 	return json.Marshal(out)
 }
+
+// Stream reports whether the caller asked for a streamed response.
+func (r *Request) Stream() bool {
+	var stream bool
+	json.Unmarshal(r.fields["stream"], &stream)
+	return stream
+}
+
+// RequestStreamUsage asks the provider to send token usage at the end of
+// a stream (OpenAI's stream_options.include_usage). It reports whether
+// the request changed. Without this, OpenAI-style providers don't say how
+// many tokens a streamed response used.
+func (r *Request) RequestStreamUsage() bool {
+	opts := map[string]json.RawMessage{}
+	if raw, ok := r.fields["stream_options"]; ok {
+		if json.Unmarshal(raw, &opts) != nil {
+			return false // not an object; leave it for the provider to reject
+		}
+	}
+	if string(opts["include_usage"]) == "true" {
+		return false
+	}
+	opts["include_usage"] = json.RawMessage("true")
+	r.fields["stream_options"], _ = json.Marshal(opts)
+	return true
+}

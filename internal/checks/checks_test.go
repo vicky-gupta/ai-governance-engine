@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/vicky-gupta/ai-governance-engine/internal/catalog"
 	"github.com/vicky-gupta/ai-governance-engine/internal/pii"
@@ -187,5 +188,70 @@ func TestPolicyFailsClosed(t *testing.T) {
 	req := request(t, `{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
 	if d := (Policy{Engine: brokenEngine{}}).Check(context.Background(), req); d.Action != pipeline.Block {
 		t.Errorf("action = %s, want block", d.Action)
+	}
+}
+
+// fakeUsage returns a fixed amount used, or fails if err is set.
+type fakeUsage struct {
+	used int64
+	err  error
+}
+
+func (f fakeUsage) UsedThisMonth(context.Context, string, time.Time) (int64, error) {
+	return f.used, f.err
+}
+
+func TestTokenBudget(t *testing.T) {
+	budget := int64(1000)
+	withBudget := registry.System{ID: "sys-1", MonthlyTokenBudget: &budget}
+	now := func() time.Time { return time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC) }
+	body := `{"model":"m","messages":[{"role":"user","content":"hi"}]}`
+
+	tests := []struct {
+		name   string
+		system registry.System
+		usage  fakeUsage
+		want   pipeline.Action
+	}{
+		{"no budget", registry.System{ID: "sys-2"}, fakeUsage{err: errors.New("never asked")}, pipeline.Allow},
+		{"under budget", withBudget, fakeUsage{used: 999}, pipeline.Allow},
+		{"budget used up", withBudget, fakeUsage{used: 1000}, pipeline.Block},
+		{"usage unknown", withBudget, fakeUsage{err: errors.New("database down")}, pipeline.Block},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := request(t, body)
+			req.System = tc.system
+			d := TokenBudget{Usage: tc.usage, Now: now}.Check(context.Background(), req)
+			if d.Action != tc.want {
+				t.Errorf("action = %s (%s), want %s", d.Action, d.Reason, tc.want)
+			}
+			if tc.name == "budget used up" && !strings.Contains(d.Reason, "1 December 2026") {
+				t.Errorf("reason %q should say when the budget resets", d.Reason)
+			}
+		})
+	}
+}
+
+func TestTokenBudgetTurnsOnStreamUsage(t *testing.T) {
+	check := TokenBudget{Usage: fakeUsage{}}
+
+	req := request(t, `{"model":"m","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	if d := check.Check(context.Background(), req); d.Action != pipeline.Modify {
+		t.Fatalf("stream without usage: action = %s, want modify", d.Action)
+	}
+	out, _ := req.Encode()
+	if !strings.Contains(string(out), `"stream_options":{"include_usage":true}`) {
+		t.Errorf("forwarded body %s should ask for stream usage", out)
+	}
+
+	// Already asked for, or not streaming: nothing to change.
+	for _, body := range []string{
+		`{"model":"m","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"user","content":"hi"}]}`,
+		`{"model":"m","messages":[{"role":"user","content":"hi"}]}`,
+	} {
+		if d := check.Check(context.Background(), request(t, body)); d.Action != pipeline.Allow {
+			t.Errorf("%s: action = %s, want allow", body, d.Action)
+		}
 	}
 }

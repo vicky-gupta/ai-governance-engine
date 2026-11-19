@@ -126,3 +126,39 @@ func TestSetRateLimit(t *testing.T) {
 		}
 	}
 }
+
+func TestSetTokenBudget(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	sys, err := s.CreateSystem(ctx, System{Name: "budget-bot", Owner: "x", Purpose: "x", RiskTier: RiskMinimal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, _, err := s.CreateKey(ctx, sys.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	budget := int64(5_000_000)
+	if err := s.SetTokenBudget(ctx, sys.ID, &budget); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.SystemByKey(ctx, key)
+	if err != nil || got.MonthlyTokenBudget == nil || *got.MonthlyTokenBudget != budget {
+		t.Fatalf("after setting: %v, %v; want %d", got.MonthlyTokenBudget, err, budget)
+	}
+	// The other columns must still land in the right fields.
+	if got.RiskTier != RiskMinimal || got.Name != "budget-bot" {
+		t.Errorf("got %+v, columns scanned into the wrong fields", got)
+	}
+
+	if err := s.SetTokenBudget(ctx, sys.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.SystemByKey(ctx, key); got.MonthlyTokenBudget != nil {
+		t.Errorf("after removing: %v, want nil", *got.MonthlyTokenBudget)
+	}
+	if err := s.SetTokenBudget(ctx, "not-a-uuid", &budget); !errors.Is(err, ErrNotFound) {
+		t.Errorf("unknown system: err = %v, want ErrNotFound", err)
+	}
+}

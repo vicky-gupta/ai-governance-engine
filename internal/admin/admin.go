@@ -13,11 +13,13 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/vicky-gupta/ai-governance-engine/internal/apierr"
 	"github.com/vicky-gupta/ai-governance-engine/internal/audit"
 	"github.com/vicky-gupta/ai-governance-engine/internal/pii"
 	"github.com/vicky-gupta/ai-governance-engine/internal/registry"
+	"github.com/vicky-gupta/ai-governance-engine/internal/usage"
 	"github.com/vicky-gupta/ai-governance-engine/internal/vault"
 )
 
@@ -28,6 +30,12 @@ type Store interface {
 	CreateKey(ctx context.Context, systemID string) (string, registry.Key, error)
 	RevokeKey(ctx context.Context, keyID string) error
 	SetRateLimit(ctx context.Context, systemID string, rpm *int) error
+	SetTokenBudget(ctx context.Context, systemID string, tokens *int64) error
+}
+
+// UsageReport is what the admin API needs for usage reports.
+type UsageReport interface {
+	Summary(ctx context.Context, month time.Time) ([]usage.SystemUsage, error)
 }
 
 type AuditLog interface {
@@ -47,12 +55,13 @@ type handler struct {
 	audit AuditLog
 	vault PIIVault
 	log   *slog.Logger
+	usage UsageReport
 }
 
 // New returns the admin API. Every route requires
 // 'Authorization: Bearer <admin token>'.
-func New(store Store, auditLog AuditLog, piiVault PIIVault, token string, log *slog.Logger) http.Handler {
-	h := &handler{store: store, audit: auditLog, vault: piiVault, log: log}
+func New(store Store, auditLog AuditLog, piiVault PIIVault, usageReport UsageReport, token string, log *slog.Logger) http.Handler {
+	h := &handler{store: store, audit: auditLog, vault: piiVault, usage: usageReport, log: log}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /admin/systems", h.createSystem)
 	mux.HandleFunc("GET /admin/systems", h.listSystems)
@@ -60,6 +69,9 @@ func New(store Store, auditLog AuditLog, piiVault PIIVault, token string, log *s
 	mux.HandleFunc("DELETE /admin/keys/{id}", h.revokeKey)
 	mux.HandleFunc("PUT /admin/systems/{id}/rate-limit", h.setRateLimit)
 	mux.HandleFunc("DELETE /admin/systems/{id}/rate-limit", h.resetRateLimit)
+	mux.HandleFunc("PUT /admin/systems/{id}/token-budget", h.setTokenBudget)
+	mux.HandleFunc("DELETE /admin/systems/{id}/token-budget", h.removeTokenBudget)
+	mux.HandleFunc("GET /admin/usage", h.usageSummary)
 	mux.HandleFunc("GET /admin/audit", h.listAudit)
 	mux.HandleFunc("GET /admin/audit/verify", h.verifyAudit)
 	mux.HandleFunc("GET /admin/pii/{request_id}", h.revealPII)
@@ -166,6 +178,72 @@ func (h *handler) updateRateLimit(w http.ResponseWriter, r *http.Request, rpm *i
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+type tokenBudgetRequest struct {
+	MonthlyTokens int64 `json:"monthly_tokens"`
+}
+
+// setTokenBudget gives one AI system a monthly token budget.
+func (h *handler) setTokenBudget(w http.ResponseWriter, r *http.Request) {
+	var req tokenBudgetRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<16)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		apierr.Write(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON: "+err.Error())
+		return
+	}
+	if req.MonthlyTokens < 1 {
+		apierr.Write(w, http.StatusBadRequest, "invalid_request_error", "monthly_tokens must be at least 1")
+		return
+	}
+	h.updateTokenBudget(w, r, &req.MonthlyTokens,
+		fmt.Sprintf("token budget for system %s set to %d tokens per month", r.PathValue("id"), req.MonthlyTokens))
+}
+
+// removeTokenBudget takes an AI system's budget away.
+func (h *handler) removeTokenBudget(w http.ResponseWriter, r *http.Request) {
+	h.updateTokenBudget(w, r, nil, fmt.Sprintf("token budget for system %s removed", r.PathValue("id")))
+}
+
+func (h *handler) updateTokenBudget(w http.ResponseWriter, r *http.Request, tokens *int64, reason string) {
+	err := h.store.SetTokenBudget(r.Context(), r.PathValue("id"), tokens)
+	if errors.Is(err, registry.ErrNotFound) {
+		apierr.Write(w, http.StatusNotFound, "invalid_request_error", "AI system not found")
+		return
+	}
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	if err := h.recordAdminAction(r.Context(), "admin.set_token_budget", reason); err != nil {
+		h.log.Error("token budget changed but not audited", "error", err)
+		apierr.Write(w, http.StatusInternalServerError, "gateway_error",
+			"token budget changed, but the audit record failed")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// usageSummary reports token usage per AI system for one month:
+// ?month=2026-11, or the current month when left out.
+func (h *handler) usageSummary(w http.ResponseWriter, r *http.Request) {
+	month := time.Now().UTC()
+	if raw := r.URL.Query().Get("month"); raw != "" {
+		m, err := time.Parse("2006-01", raw)
+		if err != nil {
+			apierr.Write(w, http.StatusBadRequest, "invalid_request_error", "month must look like 2026-11")
+			return
+		}
+		month = m
+	}
+	rows, err := h.usage.Summary(r.Context(), month)
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"month": month.Format("2006-01"), "data": rows})
 }
 
 func (h *handler) listAudit(w http.ResponseWriter, r *http.Request) {

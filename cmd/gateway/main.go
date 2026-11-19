@@ -25,6 +25,7 @@ import (
 	"github.com/vicky-gupta/ai-governance-engine/internal/proxy"
 	"github.com/vicky-gupta/ai-governance-engine/internal/registry"
 	"github.com/vicky-gupta/ai-governance-engine/internal/server"
+	"github.com/vicky-gupta/ai-governance-engine/internal/usage"
 	"github.com/vicky-gupta/ai-governance-engine/internal/vault"
 )
 
@@ -64,6 +65,7 @@ func run(log *slog.Logger) error {
 		return err
 	}
 	piiVault := vault.NewStore(pool, vaultKeys)
+	usageStore := usage.NewStore(pool)
 
 	cat, err := catalog.Load(cfg.ProvidersFile, os.Getenv)
 	if err != nil {
@@ -92,6 +94,7 @@ func run(log *slog.Logger) error {
 	// so the policy (and everything after it) only sees redacted text.
 	checkPipeline := pipeline.New(
 		checks.ModelPolicy{Catalog: cat},
+		checks.TokenBudget{Usage: usageStore}, // new, second
 		checks.PIIRedaction{Vault: piiVault},
 		checks.Policy{Engine: rules},
 	)
@@ -121,15 +124,16 @@ func run(log *slog.Logger) error {
 	requireKey := auth.Middleware(store, log)
 	limit := limiter.Middleware
 	runChecks := pipeline.Middleware(checkPipeline, auditLog, log)
+	meter := usage.Middleware(usageStore, log) // new
 
 	srv := &http.Server{
 		Addr: cfg.Addr,
 		Handler: server.New(server.Deps{
 			Log:    log,
 			DB:     pool,
-			Chat:   requireKey(limit(runChecks(router))),
+			Chat:   requireKey(limit(runChecks(meter(router)))),
 			Models: requireKey(limit(catalog.ModelsHandler(cat))),
-			Admin:  admin.New(store, auditLog, piiVault, cfg.AdminToken, log),
+			Admin:  admin.New(store, auditLog, piiVault, usageStore, cfg.AdminToken, log),
 		}).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
