@@ -38,3 +38,13 @@ test_max_tokens_by_tier if {
 	aigov.max_tokens == 1024 with input as {"system": high, "messages": []}
 	aigov.max_tokens == 4096 with input as {"system": limited, "messages": []}
 }
+
+
+# The same look-alike characters must not get a blocked term past the
+# request check either.
+test_blocked_term_with_lookalike_space_is_denied if {
+	count(aigov.deny) == 1 with input as {
+		"system": {"name": "x", "risk_tier": "limited"},
+		"messages": [{"role": "user", "text": "Status of Project\u202fFalcon?"}],
+	}
+}

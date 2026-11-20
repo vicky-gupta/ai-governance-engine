@@ -36,11 +36,18 @@ type ToolResult struct {
 	Hold []string // reasons to pause it for human review
 }
 
+// ResponseResult is what the policy decided about the text of one model
+// answer.
+type ResponseResult struct {
+	Deny []string // reasons to stop the answer
+}
+
 // compiled is one loaded version of the policy files.
 type compiled struct {
-	query     rego.PreparedEvalQuery // data.aigov: rules for requests
-	toolQuery rego.PreparedEvalQuery // data.aigov.tool_calls: rules for responses
-	version   string
+	query         rego.PreparedEvalQuery // data.aigov: rules for requests
+	toolQuery     rego.PreparedEvalQuery // data.aigov.tool_calls: rules for tool calls
+	responseQuery rego.PreparedEvalQuery // data.aigov.response: rules for answer text
+	version       string
 }
 
 // Engine holds the active policy and swaps in new versions safely.
@@ -106,6 +113,17 @@ func (e *Engine) EvaluateToolCalls(ctx context.Context, input map[string]any) (T
 		return ToolResult{}, c.version, fmt.Errorf("%w (is there a package aigov.tool_calls?)", err)
 	}
 	return ToolResult{Deny: toStrings(out["deny"]), Hold: toStrings(out["hold"])}, c.version, nil
+}
+
+// EvaluateResponse runs the answer rules (package aigov.response) on the
+// text of a model answer.
+func (e *Engine) EvaluateResponse(ctx context.Context, input map[string]any) (ResponseResult, string, error) {
+	c := e.current.Load()
+	out, err := eval(ctx, c.responseQuery, input)
+	if err != nil {
+		return ResponseResult{}, c.version, fmt.Errorf("%w (is there a package aigov.response?)", err)
+	}
+	return ResponseResult{Deny: toStrings(out["deny"])}, c.version, nil
 }
 
 // eval runs one prepared query with a time limit and returns the package
@@ -203,7 +221,11 @@ func compile(ctx context.Context, files map[string]string, version string) (*com
 	if err != nil {
 		return nil, err
 	}
-	return &compiled{query: q, toolQuery: tq, version: version}, nil
+	rq, err := prepare(ctx, files, "data.aigov.response")
+	if err != nil {
+		return nil, err
+	}
+	return &compiled{query: q, toolQuery: tq, responseQuery: rq, version: version}, nil
 }
 
 func prepare(ctx context.Context, files map[string]string, query string) (rego.PreparedEvalQuery, error) {

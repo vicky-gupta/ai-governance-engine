@@ -1,0 +1,4 @@
+{
+  "model": "openai/gpt-oss-120b",
+  "messages": [{"role": "user", "content": "Invent a realistic German email address for a fictional customer called Anna Schmidt. Reply with only the address."}]
+}

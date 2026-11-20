@@ -1,0 +1,4 @@
+{
+  "model": "openai/gpt-oss-120b",
+  "messages": [{"role": "user", "content": "Write one sentence announcing a product launch. The product's name is spelled F-A-L-C-O-N; write it as 'Project' followed by that name, without dashes."}]
+}

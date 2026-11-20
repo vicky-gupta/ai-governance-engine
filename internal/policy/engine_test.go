@@ -161,3 +161,29 @@ func TestEvaluateToolCallsRealPolicy(t *testing.T) {
 		t.Errorf("large refund: hold = %v", res.Hold)
 	}
 }
+func TestEvaluateResponseRealPolicy(t *testing.T) {
+	e, err := Load(context.Background(), policyDir, discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := func(tier, text string, pii ...string) map[string]any {
+		if pii == nil {
+			pii = []string{}
+		}
+		return map[string]any{
+			"system": map[string]any{"name": "test", "risk_tier": tier},
+			"text":   text,
+			"pii":    pii,
+		}
+	}
+
+	if res, _, err := e.EvaluateResponse(context.Background(), input("limited", "Your order ships today.")); err != nil || len(res.Deny) != 0 {
+		t.Errorf("clean answer: %+v, %v", res, err)
+	}
+	if res, _, _ := e.EvaluateResponse(context.Background(), input("limited", "Project Falcon is late.")); len(res.Deny) != 1 {
+		t.Errorf("blocked term: deny = %v", res.Deny)
+	}
+	if res, _, _ := e.EvaluateResponse(context.Background(), input("high", "...", "IBAN")); len(res.Deny) != 1 {
+		t.Errorf("high-risk answer with personal data: deny = %v", res.Deny)
+	}
+}
