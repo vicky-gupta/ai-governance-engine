@@ -3,3 +3,4 @@ bin/
 .env
 coverage.out
 dev.ps1
+client.ps1
