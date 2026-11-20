@@ -1,0 +1,11 @@
+{
+  "model": "openai/gpt-oss-120b",
+  "messages": [{"role": "user", "content": "What is the status of order A-1?"}],
+  "tools": [
+    {"type": "function", "function": {"name": "get_order_status", "description": "Look up an order",
+      "parameters": {"type": "object", "properties": {"order_id": {"type": "string"}}, "required": ["order_id"]}}},
+    {"type": "function", "function": {"name": "issue_refund", "description": "Refund an order",
+      "parameters": {"type": "object", "properties": {"order_id": {"type": "string"}, "amount": {"type": "number"}}, "required": ["order_id", "amount"]}}}
+  ],
+  "tool_choice": "required"
+}

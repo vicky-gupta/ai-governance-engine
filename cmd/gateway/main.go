@@ -25,6 +25,7 @@ import (
 	"github.com/vicky-gupta/ai-governance-engine/internal/proxy"
 	"github.com/vicky-gupta/ai-governance-engine/internal/registry"
 	"github.com/vicky-gupta/ai-governance-engine/internal/server"
+	"github.com/vicky-gupta/ai-governance-engine/internal/toolguard"
 	"github.com/vicky-gupta/ai-governance-engine/internal/usage"
 	"github.com/vicky-gupta/ai-governance-engine/internal/vault"
 )
@@ -124,14 +125,15 @@ func run(log *slog.Logger) error {
 	requireKey := auth.Middleware(store, log)
 	limit := limiter.Middleware
 	runChecks := pipeline.Middleware(checkPipeline, auditLog, log)
-	meter := usage.Middleware(usageStore, log) // new
+	meter := usage.Middleware(usageStore, log)
+	guardTools := toolguard.Middleware(rules, auditLog, log) // new
 
 	srv := &http.Server{
 		Addr: cfg.Addr,
 		Handler: server.New(server.Deps{
 			Log:    log,
 			DB:     pool,
-			Chat:   requireKey(limit(runChecks(meter(router)))),
+			Chat:   requireKey(limit(runChecks(guardTools(meter(router))))),
 			Models: requireKey(limit(catalog.ModelsHandler(cat))),
 			Admin:  admin.New(store, auditLog, piiVault, usageStore, cfg.AdminToken, log),
 		}).Handler(),

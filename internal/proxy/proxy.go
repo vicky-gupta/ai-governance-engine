@@ -22,6 +22,11 @@ func New(target *url.URL, apiKey string, log *slog.Logger) http.Handler {
 			// Never forward the caller's credentials. The provider only
 			// ever sees the gateway's key.
 			r.Out.Header.Set("Authorization", "Bearer "+apiKey)
+			// The gateway reads every response (token usage, tool calls), so
+			// it must not get it compressed in a format the caller chose.
+			// Without this header, Go's HTTP client asks for gzip itself and
+			// unpacks the response before the gateway sees it.
+			r.Out.Header.Del("Accept-Encoding")
 		},
 		// Providers send their own X-Request-ID. The gateway's ID is the one
 		// callers use to find the audit entry, so the provider's is kept

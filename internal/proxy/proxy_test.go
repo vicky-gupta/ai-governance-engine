@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bufio"
+	"compress/gzip"
 	"io"
 	"log/slog"
 	"net/http"
@@ -135,5 +136,34 @@ func TestRenamesUpstreamRequestID(t *testing.T) {
 	}
 	if got := rec.Header().Get("X-Upstream-Request-ID"); got != "provider-123" {
 		t.Errorf("X-Upstream-Request-ID = %q, want the provider's ID", got)
+	}
+}
+
+// The gateway reads provider responses (token usage, tool calls), so it
+// must get them uncompressed, even when the caller asks for gzip.
+func TestResponsesReachTheGatewayUncompressed(t *testing.T) {
+	const body = `{"usage":{"total_tokens":42}}`
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			w.Header().Set("Content-Encoding", "gzip")
+			gz := gzip.NewWriter(w)
+			io.WriteString(gz, body)
+			gz.Close()
+			return
+		}
+		io.WriteString(w, body)
+	}))
+	defer upstream.Close()
+	target, _ := url.Parse(upstream.URL)
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{}`))
+	req.Header.Set("Accept-Encoding", "gzip, deflate") // what the OpenAI Python SDK sends
+	rec := httptest.NewRecorder()
+	New(target, "k", discardLogger()).ServeHTTP(rec, req)
+
+	if rec.Body.String() != body || rec.Header().Get("Content-Encoding") != "" {
+		t.Errorf("gateway saw %q (Content-Encoding %q), want the plain JSON",
+			rec.Body.String(), rec.Header().Get("Content-Encoding"))
 	}
 }

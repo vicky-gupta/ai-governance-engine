@@ -29,10 +29,18 @@ type Result struct {
 	MaxTokens *int     // limit for max_tokens; nil if the policy sets none
 }
 
+// ToolResult is what the policy decided about the tool calls in one
+// model response.
+type ToolResult struct {
+	Deny []string // reasons to stop the response
+	Hold []string // reasons to pause it for human review
+}
+
 // compiled is one loaded version of the policy files.
 type compiled struct {
-	query   rego.PreparedEvalQuery
-	version string
+	query     rego.PreparedEvalQuery // data.aigov: rules for requests
+	toolQuery rego.PreparedEvalQuery // data.aigov.tool_calls: rules for responses
+	version   string
 }
 
 // Engine holds the active policy and swaps in new versions safely.
@@ -71,19 +79,9 @@ func (e *Engine) Version() string {
 // version of the policy that produced it.
 func (e *Engine) Evaluate(ctx context.Context, input map[string]any) (Result, string, error) {
 	c := e.current.Load() // one version for the whole evaluation
-	ctx, cancel := context.WithTimeout(ctx, evalTimeout)
-	defer cancel()
-
-	rs, err := c.query.Eval(ctx, rego.EvalInput(input))
+	out, err := eval(ctx, c.query, input)
 	if err != nil {
-		return Result{}, c.version, fmt.Errorf("policy: %w", err)
-	}
-	if len(rs) == 0 || len(rs[0].Expressions) == 0 {
-		return Result{}, c.version, errors.New("policy: no result (is the package named aigov?)")
-	}
-	out, ok := rs[0].Expressions[0].Value.(map[string]any)
-	if !ok {
-		return Result{}, c.version, errors.New("policy: unexpected result type")
+		return Result{}, c.version, fmt.Errorf("%w (is the package named aigov?)", err)
 	}
 
 	res := Result{Deny: toStrings(out["deny"]), Hold: toStrings(out["hold"])}
@@ -97,6 +95,37 @@ func (e *Engine) Evaluate(ctx context.Context, input map[string]any) (Result, st
 		res.MaxTokens = &limit
 	}
 	return res, c.version, nil
+}
+
+// EvaluateToolCalls runs the tool-call rules (package aigov.tool_calls)
+// on the tool calls in a model response.
+func (e *Engine) EvaluateToolCalls(ctx context.Context, input map[string]any) (ToolResult, string, error) {
+	c := e.current.Load()
+	out, err := eval(ctx, c.toolQuery, input)
+	if err != nil {
+		return ToolResult{}, c.version, fmt.Errorf("%w (is there a package aigov.tool_calls?)", err)
+	}
+	return ToolResult{Deny: toStrings(out["deny"]), Hold: toStrings(out["hold"])}, c.version, nil
+}
+
+// eval runs one prepared query with a time limit and returns the package
+// it evaluates to as a map.
+func eval(ctx context.Context, q rego.PreparedEvalQuery, input map[string]any) (map[string]any, error) {
+	ctx, cancel := context.WithTimeout(ctx, evalTimeout)
+	defer cancel()
+
+	rs, err := q.Eval(ctx, rego.EvalInput(input))
+	if err != nil {
+		return nil, fmt.Errorf("policy: %w", err)
+	}
+	if len(rs) == 0 || len(rs[0].Expressions) == 0 {
+		return nil, errors.New("policy: no result")
+	}
+	out, ok := rs[0].Expressions[0].Value.(map[string]any)
+	if !ok {
+		return nil, errors.New("policy: unexpected result type")
+	}
+	return out, nil
 }
 
 // Watch checks the policy folder every interval and loads changed files.
@@ -166,15 +195,27 @@ func readPolicies(dir string) (map[string]string, string, error) {
 }
 
 func compile(ctx context.Context, files map[string]string, version string) (*compiled, error) {
-	opts := []func(*rego.Rego){rego.Query("data.aigov")}
+	q, err := prepare(ctx, files, "data.aigov")
+	if err != nil {
+		return nil, err
+	}
+	tq, err := prepare(ctx, files, "data.aigov.tool_calls")
+	if err != nil {
+		return nil, err
+	}
+	return &compiled{query: q, toolQuery: tq, version: version}, nil
+}
+
+func prepare(ctx context.Context, files map[string]string, query string) (rego.PreparedEvalQuery, error) {
+	opts := []func(*rego.Rego){rego.Query(query)}
 	for name, src := range files {
 		opts = append(opts, rego.Module(name, src))
 	}
 	q, err := rego.New(opts...).PrepareForEval(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("policy: %w", err)
+		return rego.PreparedEvalQuery{}, fmt.Errorf("policy: %w", err)
 	}
-	return &compiled{query: q, version: version}, nil
+	return q, nil
 }
 
 // toStrings turns a Rego set (which arrives as a list) into sorted strings.

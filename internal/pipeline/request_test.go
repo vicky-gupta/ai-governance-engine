@@ -122,3 +122,20 @@ func TestMapTextRejectsUnknownContent(t *testing.T) {
 		t.Error("expected an error for content that is a number")
 	}
 }
+func TestToolNames(t *testing.T) {
+	req, err := ParseRequest([]byte(`{"model":"m","messages":[{"role":"user","content":"hi"}],
+		"tools":[{"type":"function","function":{"name":"get_order_status","parameters":{}}}],
+		"functions":[{"name":"issue_refund"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := req.ToolNames()
+	if len(got) != 2 || got[0] != "get_order_status" || got[1] != "issue_refund" {
+		t.Errorf("ToolNames = %v, want both the tools and the older functions", got)
+	}
+
+	plain, _ := ParseRequest([]byte(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`))
+	if got := plain.ToolNames(); len(got) != 0 {
+		t.Errorf("no tools: %v, want empty", got)
+	}
+}

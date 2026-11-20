@@ -176,3 +176,29 @@ func (r *Request) RequestStreamUsage() bool {
 	r.fields["stream_options"], _ = json.Marshal(opts)
 	return true
 }
+
+// ToolNames returns the names of the tools the caller offers the model:
+// the "tools" list, plus the older "functions" list, which OpenAI-style
+// APIs still accept. Missing one of them would be a way around the
+// tool rules.
+func (r *Request) ToolNames() []string {
+	var tools []struct {
+		Function struct {
+			Name string `json:"name"`
+		} `json:"function"`
+	}
+	var functions []struct {
+		Name string `json:"name"`
+	}
+	json.Unmarshal(r.fields["tools"], &tools)
+	json.Unmarshal(r.fields["functions"], &functions)
+
+	names := []string{}
+	for _, t := range tools {
+		names = append(names, t.Function.Name)
+	}
+	for _, f := range functions {
+		names = append(names, f.Name)
+	}
+	return names
+}

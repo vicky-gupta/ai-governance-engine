@@ -32,12 +32,25 @@ func ProviderFrom(r *http.Request) string {
 }
 
 type requestIDKey struct{}
+type requestKey struct{}
 
 // RequestIDFrom returns the gateway's ID for this request, the same one
 // that is in the audit log and the X-Request-ID header.
 func RequestIDFrom(r *http.Request) string {
 	id, _ := r.Context().Value(requestIDKey{}).(string)
 	return id
+}
+
+// WithRequest stores the checked request in ctx.
+func WithRequest(ctx context.Context, req *Request) context.Context {
+	return context.WithValue(ctx, requestKey{}, req)
+}
+
+// RequestFrom returns the request as the pipeline saw it, after all
+// changes. Response checks use it to know who asked for what.
+func RequestFrom(r *http.Request) (*Request, bool) {
+	req, ok := r.Context().Value(requestKey{}).(*Request)
+	return req, ok
 }
 
 // maxBodyBytes limits request size. Chat requests with long histories can
@@ -149,6 +162,7 @@ func Middleware(p *Pipeline, rec Recorder, log *slog.Logger) func(http.Handler) 
 			r.Body = io.NopCloser(bytes.NewReader(forward))
 			ctx := context.WithValue(r.Context(), providerKey{}, req.Provider)
 			ctx = context.WithValue(ctx, requestIDKey{}, requestID)
+			ctx = WithRequest(ctx, req)
 			r = r.WithContext(ctx)
 			r.Body = io.NopCloser(bytes.NewReader(forward))
 			r.ContentLength = int64(len(forward))

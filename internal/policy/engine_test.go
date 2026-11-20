@@ -137,3 +137,27 @@ func TestBadMaxTokensIsAnError(t *testing.T) {
 		t.Error("a non-numeric max_tokens was accepted")
 	}
 }
+func TestEvaluateToolCallsRealPolicy(t *testing.T) {
+	e, err := Load(context.Background(), policyDir, discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := func(name string, args any) map[string]any {
+		return map[string]any{
+			"system":     map[string]any{"name": "support-bot", "risk_tier": "limited"},
+			"tool_calls": []any{map[string]any{"name": name, "arguments": args}},
+		}
+	}
+
+	res, version, err := e.EvaluateToolCalls(context.Background(), input("get_order_status", map[string]any{"order_id": "A-1"}))
+	if err != nil || len(res.Deny) != 0 || len(res.Hold) != 0 || version != e.Version() {
+		t.Errorf("approved call: %+v, %q, %v", res, version, err)
+	}
+	if res, _, _ := e.EvaluateToolCalls(context.Background(), input("drop_database", map[string]any{})); len(res.Deny) != 1 {
+		t.Errorf("unapproved call: deny = %v", res.Deny)
+	}
+	// Arguments arrive from Go as float64; the policy must still compare them.
+	if res, _, _ := e.EvaluateToolCalls(context.Background(), input("issue_refund", map[string]any{"amount": 250.0})); len(res.Hold) != 1 {
+		t.Errorf("large refund: hold = %v", res.Hold)
+	}
+}

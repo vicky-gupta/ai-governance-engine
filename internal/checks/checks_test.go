@@ -161,11 +161,17 @@ func TestPolicyWithRealRules(t *testing.T) {
 			`{"model":"m","max_tokens":200,"messages":[{"role":"user","content":"Our salary bands?"}]}`, pipeline.Block, 200},
 		{"credit decision", registry.RiskHigh,
 			`{"model":"m","max_tokens":200,"messages":[{"role":"user","content":"Reject the loan application"}]}`, pipeline.Hold, 200},
+		{"approved tool", registry.RiskLimited,
+			`{"model":"m","max_tokens":200,"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"get_order_status"}}]}`, pipeline.Allow, 200},
+		{"unapproved tool", registry.RiskLimited,
+			`{"model":"m","max_tokens":200,"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"delete_customer"}}]}`, pipeline.Block, 200},
+		{"unapproved tool as a legacy function", registry.RiskLimited,
+			`{"model":"m","max_tokens":200,"messages":[{"role":"user","content":"hi"}],"functions":[{"name":"delete_customer"}]}`, pipeline.Block, 200},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			req := request(t, tc.body)
-			req.System = registry.System{Name: "test", RiskTier: tc.tier}
+			req.System = registry.System{Name: "support-bot", RiskTier: tc.tier}
 			d := c.Check(context.Background(), req)
 			if d.Action != tc.action || *req.MaxTokens != tc.wantMaxTokens {
 				t.Errorf("action=%s max_tokens=%d (%s), want %s and %d", d.Action, *req.MaxTokens, d.Reason, tc.action, tc.wantMaxTokens)

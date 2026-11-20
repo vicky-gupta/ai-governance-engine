@@ -119,6 +119,7 @@ func (c Policy) Check(ctx context.Context, req *pipeline.Request) pipeline.Decis
 		"provider": req.Provider,
 		"region":   req.Region,
 		"messages": messages,
+		"tools":    req.ToolNames(),
 	}
 	if req.MaxTokens != nil {
 		input["max_tokens"] = *req.MaxTokens
