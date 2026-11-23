@@ -23,6 +23,7 @@ type Deps struct {
 	Chat   http.Handler // POST /v1/chat/completions: auth + pipeline + proxy
 	Models http.Handler // GET /v1/models: auth + proxy
 	Admin  http.Handler // the /admin API
+	Review http.Handler // the /review API for human reviewers
 }
 
 type Server struct {
@@ -46,6 +47,7 @@ func (s *Server) Handler() http.Handler {
 
 	// Registry management. The admin handler does its own routing.
 	mux.Handle("/admin/", s.deps.Admin)
+	mux.Handle("/review/", s.deps.Review)
 
 	return s.logRequests(mux)
 }

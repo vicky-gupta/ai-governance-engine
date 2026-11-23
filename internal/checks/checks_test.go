@@ -161,6 +161,8 @@ func TestPolicyWithRealRules(t *testing.T) {
 			`{"model":"m","max_tokens":200,"messages":[{"role":"user","content":"Our salary bands?"}]}`, pipeline.Block, 200},
 		{"credit decision", registry.RiskHigh,
 			`{"model":"m","max_tokens":200,"messages":[{"role":"user","content":"Reject the loan application"}]}`, pipeline.Hold, 200},
+		{"held request is still capped", registry.RiskHigh,
+			`{"model":"m","messages":[{"role":"user","content":"Reject the loan application"}]}`, pipeline.Hold, 1024},
 		{"approved tool", registry.RiskLimited,
 			`{"model":"m","max_tokens":200,"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"get_order_status"}}]}`, pipeline.Allow, 200},
 		{"unapproved tool", registry.RiskLimited,

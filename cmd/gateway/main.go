@@ -14,6 +14,7 @@ import (
 	"github.com/vicky-gupta/ai-governance-engine/internal/ratelimit"
 
 	"github.com/vicky-gupta/ai-governance-engine/internal/admin"
+	"github.com/vicky-gupta/ai-governance-engine/internal/approval"
 	"github.com/vicky-gupta/ai-governance-engine/internal/audit"
 	"github.com/vicky-gupta/ai-governance-engine/internal/auth"
 	"github.com/vicky-gupta/ai-governance-engine/internal/catalog"
@@ -68,6 +69,7 @@ func run(log *slog.Logger) error {
 	}
 	piiVault := vault.NewStore(pool, vaultKeys)
 	usageStore := usage.NewStore(pool)
+	approvals := approval.NewStore(pool, vaultKeys, cfg.ApprovalTTL) // new
 
 	cat, err := catalog.Load(cfg.ProvidersFile, os.Getenv)
 	if err != nil {
@@ -125,10 +127,17 @@ func run(log *slog.Logger) error {
 
 	requireKey := auth.Middleware(store, log)
 	limit := limiter.Middleware
-	runChecks := pipeline.Middleware(checkPipeline, auditLog, log)
+	runChecks := pipeline.Middleware(checkPipeline, auditLog, approvals, log) // approvals added
 	meter := usage.Middleware(usageStore, log)
 	guardTools := toolguard.Middleware(rules, auditLog, log)
 	guardOutput := outputguard.Middleware(rules, auditLog, log) // new
+
+	// The admin API, plus reviewer management behind the same admin token.
+	reviewerAdmin := admin.RequireToken(cfg.AdminToken, approval.AdminAPI(approvals, auditLog, log))
+	adminAPI := http.NewServeMux()
+	adminAPI.Handle("/admin/", admin.New(store, auditLog, piiVault, usageStore, cfg.AdminToken, log))
+	adminAPI.Handle("/admin/reviewers", reviewerAdmin)
+	adminAPI.Handle("/admin/reviewers/", reviewerAdmin)
 
 	srv := &http.Server{
 		Addr: cfg.Addr,
@@ -137,7 +146,8 @@ func run(log *slog.Logger) error {
 			DB:     pool,
 			Chat:   requireKey(limit(runChecks(guardOutput(guardTools(meter(router)))))),
 			Models: requireKey(limit(catalog.ModelsHandler(cat))),
-			Admin:  admin.New(store, auditLog, piiVault, usageStore, cfg.AdminToken, log),
+			Admin:  adminAPI,
+			Review: approval.ReviewAPI(approvals, auditLog, log),
 		}).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}

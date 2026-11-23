@@ -23,6 +23,7 @@ func testDeps() Deps {
 		Chat:   http.NotFoundHandler(),
 		Models: http.NotFoundHandler(),
 		Admin:  http.NotFoundHandler(),
+		Review: http.NotFoundHandler(),
 	}
 }
 
@@ -56,6 +57,7 @@ func TestRouting(t *testing.T) {
 	deps.Chat = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hit = "chat" })
 	deps.Models = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hit = "models" })
 	deps.Admin = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hit = "admin" })
+	deps.Review = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hit = "review" })
 	h := New(deps).Handler()
 
 	cases := []struct {
@@ -68,6 +70,7 @@ func TestRouting(t *testing.T) {
 		{"GET", "/admin/systems", "admin", http.StatusOK},
 		{"POST", "/v1/files", "", http.StatusNotFound},
 		{"GET", "/v1/chat/completions", "", http.StatusMethodNotAllowed},
+		{"GET", "/review/approvals", "review", http.StatusOK},
 	}
 	for _, tc := range cases {
 		t.Run(tc.method+" "+tc.path, func(t *testing.T) {

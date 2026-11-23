@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -34,6 +35,23 @@ func ProviderFrom(r *http.Request) string {
 type requestIDKey struct{}
 type requestKey struct{}
 
+// heldRequest describes a held request for the reviewer: the messages as
+// the model would have seen them, with personal data already replaced.
+func heldRequest(req *Request, reason string, body []byte) Held {
+	h := Held{
+		RequestID:   req.ID,
+		SystemID:    req.System.ID,
+		SystemName:  req.System.Name,
+		Model:       req.Model,
+		Reason:      reason,
+		RequestHash: audit.HashBytes(body),
+	}
+	for _, m := range req.Messages {
+		h.Messages = append(h.Messages, HeldMessage{Role: m.Role(), Text: m.Text()})
+	}
+	return h
+}
+
 // RequestIDFrom returns the gateway's ID for this request, the same one
 // that is in the audit log and the X-Request-ID header.
 func RequestIDFrom(r *http.Request) string {
@@ -59,8 +77,9 @@ const maxBodyBytes = 10 << 20
 
 // Middleware runs the pipeline on every chat request before it reaches
 // the proxy, and records every decision in the audit log. It must sit
-// after the auth middleware.
-func Middleware(p *Pipeline, rec Recorder, log *slog.Logger) func(http.Handler) http.Handler {
+//
+// approvals may be nil: then a held request is simply refused.
+func Middleware(p *Pipeline, rec Recorder, approvals Approvals, log *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			sys, ok := auth.SystemFrom(r.Context())
@@ -94,6 +113,35 @@ func Middleware(p *Pipeline, rec Recorder, log *slog.Logger) func(http.Handler) 
 			req.ID = requestID
 
 			res := p.Run(r.Context(), req)
+
+			// A held request either opens an approval, or, sent again with
+			// an approval ID, uses one.
+			var approvalID string
+			var approvalErr error
+			approved := false
+			if res.Action == Hold && approvals != nil {
+				if id := r.Header.Get(ApprovalHeader); id != "" {
+					reviewer, err := approvals.Use(r.Context(), id, sys.ID, audit.HashBytes(body), requestID)
+					if err == nil {
+						approved = true
+						res.Reason = fmt.Sprintf("approved by %s (approval %s); held because: %s", reviewer, id, res.Reason)
+						res.Action, res.Check = Allow, "approval"
+					} else {
+						approvalErr = err
+						res.Reason = fmt.Sprintf("%s (approval %s can't be used: %v)", res.Reason, id, err)
+					}
+				} else {
+					id, err := approvals.Open(r.Context(), heldRequest(req, res.Reason, body))
+					if err != nil {
+						log.Error("could not open an approval", "request_id", requestID, "error", err)
+						apierr.Write(w, http.StatusServiceUnavailable, "gateway_error",
+							"approval workflow unavailable; request not processed")
+						return
+					}
+					approvalID = id
+					res.Reason = fmt.Sprintf("%s (approval %s)", res.Reason, id)
+				}
+			}
 			w.Header().Set("X-Request-ID", requestID)
 			w.Header().Set("X-Aigov-Decision", string(res.Action))
 			log.Info("decision",
@@ -106,8 +154,10 @@ func Middleware(p *Pipeline, rec Recorder, log *slog.Logger) func(http.Handler) 
 			)
 
 			// What gets forwarded: the original bytes, or the modified request.
+			// An approved request goes out as the checks left it (for example
+			// with the policy's max_tokens cap).
 			forward := body
-			if res.Action == Modify {
+			if res.Action == Modify || approved {
 				forward, err = req.Encode()
 				if err != nil {
 					log.Error("pipeline: re-encoding request failed", "error", err)
@@ -150,10 +200,18 @@ func Middleware(p *Pipeline, rec Recorder, log *slog.Logger) func(http.Handler) 
 					"blocked by "+res.Check+": "+res.Reason)
 				return
 			case Hold:
-				// The approval workflow arrives in Module 10. Until then,
-				// a held request is refused with a clear explanation.
-				apierr.Write(w, http.StatusForbidden, "approval_required",
-					"held for human review by "+res.Check+": "+res.Reason)
+				msg := "held for human review by " + res.Check + ": " + res.Reason
+				switch {
+				case approvalErr != nil:
+					apierr.Write(w, http.StatusForbidden, "approval_invalid", msg)
+				case approvalID != "":
+					w.Header().Set("X-Aigov-Approval-Id", approvalID)
+					apierr.Write(w, http.StatusForbidden, "approval_required", msg+
+						". Once a reviewer approves it, send the same request again with the header "+
+						ApprovalHeader+": "+approvalID)
+				default:
+					apierr.Write(w, http.StatusForbidden, "approval_required", msg)
+				}
 				return
 			}
 

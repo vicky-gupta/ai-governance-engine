@@ -48,7 +48,7 @@ func runWith(t *testing.T, p *Pipeline, rec Recorder, body string, withSystem bo
 			t.Errorf("ContentLength = %d, body is %d bytes", r.ContentLength, len(b))
 		}
 	})
-	h := Middleware(p, rec, slog.New(slog.NewTextHandler(io.Discard, nil)))(next)
+	h := Middleware(p, rec, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))(next)
 
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
 	if withSystem {
@@ -167,7 +167,7 @@ func TestMiddlewarePassesRouteToProxy(t *testing.T) {
 	rec := &fakeRecorder{}
 	var gotProvider string
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { gotProvider = ProviderFrom(r) })
-	h := Middleware(New(route), rec, slog.New(slog.NewTextHandler(io.Discard, nil)))(next)
+	h := Middleware(New(route), rec, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))(next)
 
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(validBody))
 	req = req.WithContext(auth.WithSystem(req.Context(), registry.System{ID: "sys-1", Name: "support-bot"}))

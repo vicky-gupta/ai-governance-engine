@@ -76,10 +76,13 @@ func New(store Store, auditLog AuditLog, piiVault PIIVault, usageReport UsageRep
 	mux.HandleFunc("GET /admin/audit/verify", h.verifyAudit)
 	mux.HandleFunc("GET /admin/pii/{request_id}", h.revealPII)
 	mux.HandleFunc("POST /admin/pii/erase", h.erasePII)
-	return requireToken(token, mux)
+	return RequireToken(token, mux)
 }
 
-func requireToken(token string, next http.Handler) http.Handler {
+// RequireToken lets a request through only with the admin token. It is
+// exported so other /admin APIs (like reviewer management) use the same
+// check.
+func RequireToken(token string, next http.Handler) http.Handler {
 	want := []byte("Bearer " + token)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got := []byte(r.Header.Get("Authorization"))

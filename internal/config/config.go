@@ -5,17 +5,19 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 )
 
 type Config struct {
-	Addr          string // where the gateway listens, e.g. ":8080"
-	DatabaseURL   string // Postgres connection string
-	ProvidersFile string // path to the provider and model catalog
-	AdminToken    string // protects the /admin API
-	VaultKey      []byte // 32-byte master key for the PII vault
-	PolicyDir     string // folder with the Rego policy files
-	RedisURL      string // Redis for the rate limit counters
-	DefaultRPM    int    // requests per minute for systems without their own limit
+	Addr          string        // where the gateway listens, e.g. ":8080"
+	DatabaseURL   string        // Postgres connection string
+	ProvidersFile string        // path to the provider and model catalog
+	AdminToken    string        // protects the /admin API
+	VaultKey      []byte        // 32-byte master key for the PII vault
+	PolicyDir     string        // folder with the Rego policy files
+	RedisURL      string        // Redis for the rate limit counters
+	DefaultRPM    int           // requests per minute for systems without their own limit
+	ApprovalTTL   time.Duration // how long a held request can be approved and used
 }
 
 func Load() (Config, error) {
@@ -33,6 +35,12 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("DEFAULT_RATE_LIMIT_RPM must be a whole number of at least 1")
 	}
 	cfg.DefaultRPM = rpm
+
+	ttl, err := time.ParseDuration(getEnv("APPROVAL_TTL", "24h"))
+	if err != nil || ttl <= 0 {
+		return Config{}, fmt.Errorf("APPROVAL_TTL must be a duration like 24h or 30m")
+	}
+	cfg.ApprovalTTL = ttl
 
 	key, err := base64.StdEncoding.DecodeString(os.Getenv("PII_VAULT_KEY"))
 	if err != nil || len(key) != 32 {

@@ -134,13 +134,19 @@ func (c Policy) Check(ctx context.Context, req *pipeline.Request) pipeline.Decis
 	if len(res.Deny) > 0 {
 		return pipeline.Decision{Action: pipeline.Block, Reason: strings.Join(res.Deny, "; ")}
 	}
-	if len(res.Hold) > 0 {
-		return pipeline.Decision{Action: pipeline.Hold, Reason: strings.Join(res.Hold, "; ")}
-	}
+	// The cap is applied before a hold is returned, so a request that is
+	// later approved still goes out with it.
+	capped := false
 	if res.MaxTokens != nil && (req.MaxTokens == nil || *req.MaxTokens > *res.MaxTokens) {
 		limit := *res.MaxTokens
 		req.MaxTokens = &limit
-		return pipeline.Decision{Action: pipeline.Modify, Reason: fmt.Sprintf("max_tokens set to %d by policy", limit)}
+		capped = true
+	}
+	if len(res.Hold) > 0 {
+		return pipeline.Decision{Action: pipeline.Hold, Reason: strings.Join(res.Hold, "; ")}
+	}
+	if capped {
+		return pipeline.Decision{Action: pipeline.Modify, Reason: fmt.Sprintf("max_tokens set to %d by policy", *req.MaxTokens)}
 	}
 	return pipeline.Decision{Action: pipeline.Allow}
 }
