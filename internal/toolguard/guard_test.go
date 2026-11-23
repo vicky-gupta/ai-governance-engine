@@ -76,7 +76,7 @@ func run(t *testing.T, p Policy, rec Recorder, reqBody, contentType, body string
 			http.NewResponseController(w).Flush()
 		}
 	})
-	h := Middleware(p, rec, slog.New(slog.NewTextHandler(io.Discard, nil)))(provider)
+	h := Middleware(p, rec, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))(provider)
 
 	r := httptest.NewRequest("POST", "/v1/chat/completions", nil)
 	r = r.WithContext(pipeline.WithRequest(r.Context(), req))

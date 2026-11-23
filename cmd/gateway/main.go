@@ -129,7 +129,7 @@ func run(log *slog.Logger) error {
 	limit := limiter.Middleware
 	runChecks := pipeline.Middleware(checkPipeline, auditLog, approvals, log) // approvals added
 	meter := usage.Middleware(usageStore, log)
-	guardTools := toolguard.Middleware(rules, auditLog, log)
+	guardTools := toolguard.Middleware(rules, auditLog, approvals, log)
 	guardOutput := outputguard.Middleware(rules, auditLog, log) // new
 
 	// The admin API, plus reviewer management behind the same admin token.

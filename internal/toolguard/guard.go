@@ -9,6 +9,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -30,6 +32,13 @@ type Recorder interface {
 	Record(ctx context.Context, e audit.Entry) error
 }
 
+// Approvals keeps held tool calls for human review and gives back the
+// approved answer once. approval.Store implements it.
+type Approvals interface {
+	OpenToolCalls(ctx context.Context, h pipeline.Held, response []byte, contentType string) (string, error)
+	UseToolCalls(ctx context.Context, id, systemID, requestHash, requestID string) (reviewer string, response []byte, contentType string, err error)
+}
+
 // checkName is how this check appears in the audit log.
 const checkName = "tool_calls"
 
@@ -40,7 +49,13 @@ const checkName = "tool_calls"
 // agent sees any of it, so responses to tool requests are held back and
 // sent in one piece, even when streamed. Requests without tools are not
 // affected.
-func Middleware(p Policy, rec Recorder, log *slog.Logger) func(http.Handler) http.Handler {
+//
+// Held tool calls wait for a reviewer (approvals may be nil: then they are
+// simply refused). Once approved, the agent sends the same request again
+// with the approval ID, and gets back the answer the reviewer approved,
+// without the model being asked again: a new answer could contain a
+// different tool call.
+func Middleware(p Policy, rec Recorder, approvals Approvals, log *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			req, ok := pipeline.RequestFrom(r)
@@ -52,6 +67,11 @@ func Middleware(p Policy, rec Recorder, log *slog.Logger) func(http.Handler) htt
 			if len(req.ToolNames()) == 0 {
 				next.ServeHTTP(w, r) // no tools offered, so no tool calls possible
 				return
+			}
+			if id := r.Header.Get(pipeline.ApprovalHeader); id != "" && approvals != nil {
+				if replayed := replay(w, r, approvals, rec, log, req, id); replayed {
+					return
+				}
 			}
 
 			buf := &holdingWriter{header: w.Header()}
@@ -73,6 +93,24 @@ func Middleware(p Policy, rec Recorder, log *slog.Logger) func(http.Handler) htt
 			}
 
 			action, reason, version := decide(r.Context(), p, req, calls)
+
+			// Held tool calls wait for a reviewer, with the answer kept for later.
+			var approvalID string
+			if action == pipeline.Hold && approvals != nil {
+				held := pipeline.HeldRequest(req, reason)
+				for _, c := range calls {
+					held.ToolCalls = append(held.ToolCalls, pipeline.HeldToolCall{Name: c.Name, Arguments: c.Arguments})
+				}
+				id, err := approvals.OpenToolCalls(r.Context(), held, buf.body.Bytes(), w.Header().Get("Content-Type"))
+				if err != nil {
+					log.Error("toolguard: could not open an approval", "request_id", req.ID, "error", err)
+					replace(w, http.StatusServiceUnavailable, "", "gateway_error",
+						"approval workflow unavailable; response withheld")
+					return
+				}
+				approvalID = id
+				reason += " (approval " + id + ")"
+			}
 			entry := audit.Entry{
 				RequestID:     req.ID,
 				SystemID:      req.System.ID,
@@ -101,12 +139,65 @@ func Middleware(p Policy, rec Recorder, log *slog.Logger) func(http.Handler) htt
 			case pipeline.Allow:
 				buf.release(w)
 			case pipeline.Hold:
-				replace(w, http.StatusForbidden, action, "approval_required", "tool call held for human review: "+reason)
+				msg := "tool call held for human review: " + reason
+				if approvalID != "" {
+					msg += ". Once a reviewer approves it, send the same request again with the header " +
+						pipeline.ApprovalHeader + ": " + approvalID
+					w.Header().Set("X-Aigov-Approval-Id", approvalID) // before replace writes the response
+				}
+				replace(w, http.StatusForbidden, action, "approval_required", msg)
 			default:
 				replace(w, http.StatusForbidden, action, "policy_violation", "tool call blocked: "+reason)
 			}
 		})
 	}
+}
+
+// replay answers a request sent again with an approval ID. It reports
+// whether it answered: an approval for something else (a held request,
+// handled by the pipeline) is not its business, and the request goes on
+// to the model as usual.
+func replay(w http.ResponseWriter, r *http.Request, approvals Approvals, rec Recorder, log *slog.Logger,
+	req *pipeline.Request, id string) bool {
+	reviewer, response, contentType, err := approvals.UseToolCalls(r.Context(), id, req.System.ID, req.BodyHash, req.ID)
+	if errors.Is(err, pipeline.ErrOtherKind) {
+		return false
+	}
+
+	entry := audit.Entry{
+		RequestID:  req.ID,
+		SystemID:   req.System.ID,
+		SystemName: req.System.Name,
+		Model:      req.Model,
+		Provider:   req.Provider,
+		Region:     req.Region,
+		Check:      checkName,
+	}
+	if err != nil {
+		entry.Action = string(pipeline.Hold)
+		entry.Reason = fmt.Sprintf("approval %s can't be used: %v", id, err)
+	} else {
+		entry.Action = string(pipeline.Allow)
+		entry.Reason = fmt.Sprintf("tool calls approved by %s (approval %s); the approved answer was given back", reviewer, id)
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 3*time.Second)
+	defer cancel()
+	if recErr := rec.Record(ctx, entry); recErr != nil {
+		log.Error("toolguard: audit record failed", "request_id", req.ID, "error", recErr)
+		replace(w, http.StatusServiceUnavailable, "", "gateway_error", "audit log unavailable; response withheld")
+		return true
+	}
+	if err != nil {
+		replace(w, http.StatusForbidden, pipeline.Hold, "approval_invalid", entry.Reason)
+		return true
+	}
+
+	log.Info("approved tool calls given back", "request_id", req.ID, "approval", id, "reviewer", reviewer)
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("X-Aigov-Decision", string(pipeline.Allow))
+	w.WriteHeader(http.StatusOK)
+	w.Write(response)
+	return true
 }
 
 // decide runs the tool-call policy. Anything it can't evaluate is blocked.
@@ -156,7 +247,7 @@ func names(calls []Call) []string {
 func replace(w http.ResponseWriter, status int, action pipeline.Action, errType, message string) {
 	h := w.Header()
 	for k := range h {
-		if k != "X-Request-Id" && !strings.HasPrefix(k, "X-Ratelimit-") {
+		if k != "X-Request-Id" && k != "X-Aigov-Approval-Id" && !strings.HasPrefix(k, "X-Ratelimit-") {
 			delete(h, k)
 		}
 	}

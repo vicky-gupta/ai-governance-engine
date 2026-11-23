@@ -27,6 +27,14 @@ const (
 	Used     Status = "used"
 )
 
+// Kind says what an approval is for.
+type Kind string
+
+const (
+	KindRequest   Kind = "request"    // a request the policy held
+	KindToolCalls Kind = "tool_calls" // the tool calls in a model's answer
+)
+
 // Reviewer is a person who may decide on held requests.
 type Reviewer struct {
 	ID          string     `json:"id"`
@@ -39,7 +47,9 @@ type Reviewer struct {
 // Approval is one held request and what happened to it.
 type Approval struct {
 	ID              string     `json:"id"`
+	Kind            Kind       `json:"kind"`
 	RequestID       string     `json:"request_id"`
+	RequestHash     string     `json:"-"`
 	SystemID        string     `json:"ai_system_id"`
 	Status          Status     `json:"status"`
 	Expired         bool       `json:"expired"`
@@ -55,10 +65,11 @@ type Approval struct {
 
 // Content is what a reviewer sees: the held request, redacted.
 type Content struct {
-	SystemName string                 `json:"ai_system"`
-	Model      string                 `json:"model"`
-	Reason     string                 `json:"held_because"`
-	Messages   []pipeline.HeldMessage `json:"messages"`
+	SystemName string                  `json:"ai_system"`
+	Model      string                  `json:"model"`
+	Reason     string                  `json:"held_because"`
+	Messages   []pipeline.HeldMessage  `json:"messages"`
+	ToolCalls  []pipeline.HeldToolCall `json:"tool_calls,omitempty"`
 }
 
 // Errors that explain why an approval can't be decided or used.

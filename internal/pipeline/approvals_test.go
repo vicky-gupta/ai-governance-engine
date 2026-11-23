@@ -65,7 +65,7 @@ func TestHoldOpensAnApproval(t *testing.T) {
 	ap, rec := &fakeApprovals{}, &fakeRecorder{}
 	w, reached := send(t, ap, rec, "")
 
-	if reached || w.Code != http.StatusForbidden || w.Header().Get("X-Aigov-Approval-Id") != "ap-1" {
+	if reached || w.Code != http.StatusForbidden || w.Result().Header.Get("X-Aigov-Approval-Id") != "ap-1" {
 		t.Fatalf("reached=%v status=%d headers=%v", reached, w.Code, w.Header())
 	}
 	if !strings.Contains(w.Body.String(), ApprovalHeader+": ap-1") {

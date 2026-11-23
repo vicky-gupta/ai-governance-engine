@@ -31,8 +31,19 @@ func NewStore(pool *pgxpool.Pool, keys *vault.Keys, ttl time.Duration) *Store {
 // Open stores a held request for review. The content is encrypted: it is
 // redacted, but free text can still hold things the detectors missed.
 func (s *Store) Open(ctx context.Context, h pipeline.Held) (string, error) {
+	return s.open(ctx, KindRequest, h, nil, "")
+}
+
+// OpenToolCalls stores held tool calls for review, together with the
+// model's answer that contains them (encrypted, like the content).
+func (s *Store) OpenToolCalls(ctx context.Context, h pipeline.Held, response []byte, contentType string) (string, error) {
+	return s.open(ctx, KindToolCalls, h, response, contentType)
+}
+
+func (s *Store) open(ctx context.Context, kind Kind, h pipeline.Held, response []byte, contentType string) (string, error) {
 	plain, err := json.Marshal(Content{
-		SystemName: h.SystemName, Model: h.Model, Reason: h.Reason, Messages: h.Messages,
+		SystemName: h.SystemName, Model: h.Model, Reason: h.Reason,
+		Messages: h.Messages, ToolCalls: h.ToolCalls,
 	})
 	if err != nil {
 		return "", err
@@ -41,12 +52,21 @@ func (s *Store) Open(ctx context.Context, h pipeline.Held) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("approval: encrypt: %w", err)
 	}
+	var sealedResponse []byte
+	if response != nil {
+		sealedResponse, err = s.keys.Encrypt(string(response), responseContext(h.RequestID))
+		if err != nil {
+			return "", fmt.Errorf("approval: encrypt: %w", err)
+		}
+	}
 	var id string
 	err = s.pool.QueryRow(ctx, `
-		INSERT INTO approvals (request_id, ai_system_id, request_hash, content, content_hash, expires_at)
-		VALUES ($1, $2, $3, $4, $5, now() + $6 * interval '1 second')
+		INSERT INTO approvals (kind, request_id, ai_system_id, request_hash, content, content_hash,
+			held_response, response_type, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now() + $9 * interval '1 second')
 		RETURNING id::text`,
-		h.RequestID, h.SystemID, h.RequestHash, sealed, sha256Hex(plain), s.ttl.Seconds(),
+		kind, h.RequestID, h.SystemID, h.RequestHash, sealed, sha256Hex(plain),
+		sealedResponse, contentType, s.ttl.Seconds(),
 	).Scan(&id)
 	if err != nil {
 		return "", fmt.Errorf("approval: open: %w", err)
@@ -149,7 +169,7 @@ func (s *Store) Use(ctx context.Context, id, systemID, requestHash, requestID st
 		UPDATE approvals a
 		SET status = 'used', used_at = now(), used_by_request_id = $4
 		FROM reviewers r
-		WHERE a.id = $1 AND a.ai_system_id = $2 AND a.status = 'approved'
+		WHERE a.id = $1 AND a.kind = 'request' AND a.ai_system_id = $2 AND a.status = 'approved'
 		  AND a.expires_at > now() AND a.request_hash = $3 AND r.id = a.decided_by
 		RETURNING r.name`,
 		id, systemID, requestHash, requestID).Scan(&reviewer)
@@ -160,28 +180,89 @@ func (s *Store) Use(ctx context.Context, id, systemID, requestHash, requestID st
 		return "", fmt.Errorf("approval: use: %w", err)
 	}
 
-	// Not usable: find out why, to tell the caller.
+	a, err := s.usable(ctx, id, systemID, requestHash, "")
+	if err != nil {
+		return "", err
+	}
+	if a.Kind == KindToolCalls {
+		// Approved tool calls for this very request: the request got through
+		// before, or there would be no tool calls. Let it through again; the
+		// tool guard uses up the approval and gives back the approved answer.
+		return a.DecidedBy, nil
+	}
+	return "", ErrWrongRequest // unreachable: a usable request approval would have matched
+}
+
+// UseToolCalls lets the approved answer of an approved tool-call approval
+// be given back once, and returns it with its content type and the
+// reviewer's name. The stored answer is deleted as it is handed out: it
+// is not needed any more.
+func (s *Store) UseToolCalls(ctx context.Context, id, systemID, requestHash, requestID string) (string, []byte, string, error) {
+	var reviewer, responseType, requestOfApproval string
+	var sealed []byte
+	err := s.pool.QueryRow(ctx, `
+		WITH target AS (
+			SELECT id, request_id, held_response FROM approvals
+			WHERE id = $1 AND kind = 'tool_calls' AND ai_system_id = $2 AND status = 'approved'
+			  AND expires_at > now() AND request_hash = $3
+			FOR UPDATE
+		)
+		UPDATE approvals a
+		SET status = 'used', used_at = now(), used_by_request_id = $4, held_response = NULL
+		FROM target, reviewers r
+		WHERE a.id = target.id AND r.id = a.decided_by
+		RETURNING r.name, target.request_id, target.held_response, a.response_type`,
+		id, systemID, requestHash, requestID).Scan(&reviewer, &requestOfApproval, &sealed, &responseType)
+	if err == nil {
+		plain, err := s.keys.Decrypt(sealed, responseContext(requestOfApproval))
+		if err != nil {
+			return "", nil, "", fmt.Errorf("approval: decrypt: %w", err)
+		}
+		return reviewer, []byte(plain), responseType, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) && !isCode(err, "22P02") {
+		return "", nil, "", fmt.Errorf("approval: use: %w", err)
+	}
+
+	if _, err := s.usable(ctx, id, systemID, requestHash, KindToolCalls); err != nil {
+		return "", nil, "", err
+	}
+	return "", nil, "", ErrWrongRequest // unreachable: a usable tool approval would have matched
+}
+
+// usable explains why an approval can't be used right now, or returns it
+// if it could be (approved, not expired, this system, this request).
+//
+// With a kind, an approval of another kind is ErrOtherKind, whatever its
+// status: it is not the caller's business. This has to be checked before
+// the status. Otherwise a request approval the pipeline has just used
+// would look "already used" to the tool guard, which then refuses the
+// very request that was approved.
+func (s *Store) usable(ctx context.Context, id, systemID, requestHash string, kind Kind) (Approval, error) {
 	a, _, err := s.Get(ctx, id)
 	switch {
 	case errors.Is(err, ErrNotFound) || (err == nil && a.SystemID != systemID):
-		return "", ErrNotFound // another system's approval: don't reveal it exists
+		return Approval{}, ErrNotFound // another system's approval: don't reveal it exists
 	case err != nil:
-		return "", err
+		return Approval{}, err
+	case kind != "" && a.Kind != kind:
+		return Approval{}, pipeline.ErrOtherKind
 	case a.Status == Used:
-		return "", ErrAlreadyUsed
+		return Approval{}, ErrAlreadyUsed
 	case a.Status == Rejected:
-		return "", fmt.Errorf("%w by %s", ErrRejected, a.DecidedBy)
+		return Approval{}, fmt.Errorf("%w by %s", ErrRejected, a.DecidedBy)
 	case a.Expired:
-		return "", ErrExpired
+		return Approval{}, ErrExpired
 	case a.Status == Pending:
-		return "", ErrPending
-	default:
-		return "", ErrWrongRequest
+		return Approval{}, ErrPending
+	case a.RequestHash != requestHash:
+		return Approval{}, ErrWrongRequest
 	}
+	return a, nil
 }
 
 const selectApproval = `
-	SELECT a.id::text, a.request_id, a.ai_system_id::text, a.status,
+	SELECT a.id::text, a.kind, a.request_id, a.request_hash, a.ai_system_id::text, a.status,
 		a.expires_at <= now() AND a.status IN ('pending', 'approved'),
 		a.content_hash, a.created_at, a.expires_at,
 		COALESCE(r.name, ''), a.decided_at, a.note, a.used_at, COALESCE(a.used_by_request_id, ''),
@@ -190,7 +271,7 @@ const selectApproval = `
 
 // fields lists where each column of selectApproval goes, in order.
 func (a *Approval) fields() []any {
-	return []any{&a.ID, &a.RequestID, &a.SystemID, &a.Status, &a.Expired, &a.ContentHash,
+	return []any{&a.ID, &a.Kind, &a.RequestID, &a.RequestHash, &a.SystemID, &a.Status, &a.Expired, &a.ContentHash,
 		&a.CreatedAt, &a.ExpiresAt, &a.DecidedBy, &a.DecidedAt, &a.Note, &a.UsedAt, &a.UsedByRequestID}
 }
 
@@ -263,6 +344,9 @@ func (s *Store) ReviewerByToken(ctx context.Context, token string) (Reviewer, er
 	}
 	return rv, err
 }
+
+// responseContext binds a held answer to its request in the same way.
+func responseContext(requestID string) string { return "approval-response|" + requestID }
 
 // contentContext binds the encrypted content to its request, so a sealed
 // value copied to another row can't be decrypted there.

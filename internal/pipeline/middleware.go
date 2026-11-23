@@ -35,16 +35,16 @@ func ProviderFrom(r *http.Request) string {
 type requestIDKey struct{}
 type requestKey struct{}
 
-// heldRequest describes a held request for the reviewer: the messages as
+// HeldRequest describes a held request for the reviewer: the messages as
 // the model would have seen them, with personal data already replaced.
-func heldRequest(req *Request, reason string, body []byte) Held {
+func HeldRequest(req *Request, reason string) Held {
 	h := Held{
 		RequestID:   req.ID,
 		SystemID:    req.System.ID,
 		SystemName:  req.System.Name,
 		Model:       req.Model,
 		Reason:      reason,
-		RequestHash: audit.HashBytes(body),
+		RequestHash: req.BodyHash,
 	}
 	for _, m := range req.Messages {
 		h.Messages = append(h.Messages, HeldMessage{Role: m.Role(), Text: m.Text()})
@@ -111,6 +111,7 @@ func Middleware(p *Pipeline, rec Recorder, approvals Approvals, log *slog.Logger
 			// (like the PII vault) can link it to this request.
 			requestID := newRequestID()
 			req.ID = requestID
+			req.BodyHash = audit.HashBytes(body)
 
 			res := p.Run(r.Context(), req)
 
@@ -121,7 +122,7 @@ func Middleware(p *Pipeline, rec Recorder, approvals Approvals, log *slog.Logger
 			approved := false
 			if res.Action == Hold && approvals != nil {
 				if id := r.Header.Get(ApprovalHeader); id != "" {
-					reviewer, err := approvals.Use(r.Context(), id, sys.ID, audit.HashBytes(body), requestID)
+					reviewer, err := approvals.Use(r.Context(), id, sys.ID, req.BodyHash, requestID)
 					if err == nil {
 						approved = true
 						res.Reason = fmt.Sprintf("approved by %s (approval %s); held because: %s", reviewer, id, res.Reason)
@@ -131,7 +132,7 @@ func Middleware(p *Pipeline, rec Recorder, approvals Approvals, log *slog.Logger
 						res.Reason = fmt.Sprintf("%s (approval %s can't be used: %v)", res.Reason, id, err)
 					}
 				} else {
-					id, err := approvals.Open(r.Context(), heldRequest(req, res.Reason, body))
+					id, err := approvals.Open(r.Context(), HeldRequest(req, res.Reason))
 					if err != nil {
 						log.Error("could not open an approval", "request_id", requestID, "error", err)
 						apierr.Write(w, http.StatusServiceUnavailable, "gateway_error",
@@ -178,7 +179,7 @@ func Middleware(p *Pipeline, rec Recorder, approvals Approvals, log *slog.Logger
 				Check:         res.Check,
 				Reason:        res.Reason,
 				Trace:         trace,
-				RequestHash:   audit.HashBytes(body),
+				RequestHash:   req.BodyHash,
 				PolicyVersion: req.PolicyVersion,
 			}
 			if res.Action == Allow || res.Action == Modify {
