@@ -21,7 +21,9 @@ import (
 	"github.com/vicky-gupta/ai-governance-engine/internal/checks"
 	"github.com/vicky-gupta/ai-governance-engine/internal/config"
 	"github.com/vicky-gupta/ai-governance-engine/internal/db"
+	"github.com/vicky-gupta/ai-governance-engine/internal/ner"
 	"github.com/vicky-gupta/ai-governance-engine/internal/outputguard"
+	"github.com/vicky-gupta/ai-governance-engine/internal/pii"
 	"github.com/vicky-gupta/ai-governance-engine/internal/pipeline"
 	"github.com/vicky-gupta/ai-governance-engine/internal/policy"
 	"github.com/vicky-gupta/ai-governance-engine/internal/proxy"
@@ -93,6 +95,23 @@ func run(log *slog.Logger) error {
 	go rules.Watch(ctx, 2*time.Second)
 	log.Info("policy loaded", "dir", cfg.PolicyDir, "version", rules.Version())
 
+	// Names and places need the NER sidecar (ner/). Without it, the
+	// gateway still redacts everything its patterns find.
+	var names pii.Detector
+	if cfg.NERURL != "" {
+		client := ner.New(cfg.NERURL, 3*time.Second)
+		nerCtx, nerCancel := context.WithTimeout(ctx, 3*time.Second)
+		if err := client.Ping(nerCtx); err != nil {
+			log.Warn("ner sidecar unreachable; requests are blocked until it is up", "url", cfg.NERURL, "error", err)
+		} else {
+			log.Info("ner sidecar ready", "url", cfg.NERURL)
+		}
+		nerCancel()
+		names = client
+	} else {
+		log.Warn("NER_URL not set: names and places are not detected")
+	}
+
 	// The governance checks, in the order they run. ModelPolicy rejects
 	// unapproved models and chooses the provider. PII redaction comes next,
 	// so the policy (and everything after it) only sees redacted text.
@@ -101,6 +120,7 @@ func run(log *slog.Logger) error {
 		checks.TokenBudget{Usage: usageStore}, // new, second
 		checks.PIIRedaction{Vault: piiVault},
 		checks.Policy{Engine: rules},
+		checks.PIIRedaction{Vault: piiVault, Names: names},
 	)
 	log.Info("checks configured", "allowed_regions", cat.AllowedRegions)
 	// Rate limits: counters live in Redis, shared by every gateway instance.

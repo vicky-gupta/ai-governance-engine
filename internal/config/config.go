@@ -18,6 +18,7 @@ type Config struct {
 	RedisURL      string        // Redis for the rate limit counters
 	DefaultRPM    int           // requests per minute for systems without their own limit
 	ApprovalTTL   time.Duration // how long a held request can be approved and used
+	NERURL        string        // the NER sidecar for names and places; empty: not used
 }
 
 func Load() (Config, error) {
@@ -28,6 +29,7 @@ func Load() (Config, error) {
 		PolicyDir:     getEnv("POLICY_DIR", "policies"),
 		AdminToken:    os.Getenv("ADMIN_TOKEN"),
 		RedisURL:      getEnv("REDIS_URL", "redis://localhost:6379/0"),
+		NERURL:        os.Getenv("NER_URL"),
 	}
 
 	rpm, err := strconv.Atoi(getEnv("DEFAULT_RATE_LIMIT_RPM", "60"))

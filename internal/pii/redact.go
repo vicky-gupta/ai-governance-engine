@@ -1,6 +1,7 @@
 package pii
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -22,15 +23,43 @@ type Redactor struct {
 	tokens       map[string]string // kind + normalized value -> token
 	counts       map[Kind]int
 	replacements []Replacement
+
+	// Optional: a Detector for names and places. Redact can't return an
+	// error (it is used with Message.MapText), so a Detector failure is
+	// kept in err; check Err after redacting.
+	ctx      context.Context
+	detector Detector
+	err      error
 }
 
 func NewRedactor() *Redactor {
 	return &Redactor{tokens: map[string]string{}, counts: map[Kind]int{}}
 }
 
+// WithDetector also uses d to find personal data, for this request's ctx.
+func (r *Redactor) WithDetector(ctx context.Context, d Detector) *Redactor {
+	r.ctx, r.detector = ctx, d
+	return r
+}
+
+// Err returns the first Detector error, if any. If it is not nil, the
+// redacted text may still contain personal data the Detector would have
+// found.
+func (r *Redactor) Err() error {
+	return r.err
+}
+
 // Redact returns text with every match replaced by its token.
 func (r *Redactor) Redact(text string) string {
 	matches := Find(text)
+	if r.detector != nil && r.err == nil {
+		more, err := r.detector.Detect(r.ctx, text)
+		if err != nil {
+			r.err = err
+		} else {
+			matches = Merge(matches, more)
+		}
+	}
 	if len(matches) == 0 {
 		return text
 	}

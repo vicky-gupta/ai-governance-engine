@@ -13,6 +13,16 @@ services:
     image: redis:7-alpine
     ports:
       - "6379:6379"
+  ner:
+    build: ./ner
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:3000/health')"]
+      interval: 10s
+      timeout: 5s
+      start_period: 60s
+      retries: 5
 
 volumes:
   pgdata:

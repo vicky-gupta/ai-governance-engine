@@ -1,0 +1,4 @@
+{
+  "model": "openai/gpt-oss-120b",
+  "messages": [{"role": "user", "content": "Write a short, polite reply to Jürgen Müller from München, who asked about his loan application."}]
+}

@@ -19,6 +19,10 @@ const (
 	Phone   Kind = "PHONE"     // phone number in international format
 	DETaxID Kind = "DE_TAX_ID" // German tax ID (Steuer-ID)
 	ESDNI   Kind = "ES_DNI"    // Spanish national ID (DNI)
+
+	// Found by a language model, not by patterns (see Detector).
+	Person   Kind = "PERSON"   // a person's name
+	Location Kind = "LOCATION" // a place: city, street, country
 )
 
 // Match is one piece of personal data found in a text.
@@ -94,8 +98,12 @@ func Find(text string) []Match {
 	return out
 }
 
-// ValidKind reports whether k is a kind this package detects.
+// ValidKind reports whether k is a kind of personal data the gateway
+// redacts, by pattern or by a Detector.
 func ValidKind(k Kind) bool {
+	if k == Person || k == Location {
+		return true
+	}
 	for _, d := range detectors {
 		if d.kind == k {
 			return true

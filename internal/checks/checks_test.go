@@ -137,6 +137,47 @@ func TestPIIRedactionBlocksWhenVaultFails(t *testing.T) {
 		t.Errorf("action = %s, want block", d.Action)
 	}
 }
+
+// fakeNames finds one fixed name, or fails if err is set.
+type fakeNames struct {
+	name string
+	err  error
+}
+
+func (f fakeNames) Detect(_ context.Context, text string) ([]pii.Match, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	if i := strings.Index(text, f.name); i >= 0 {
+		return []pii.Match{{Kind: pii.Person, Start: i, End: i + len(f.name), Value: f.name}}, nil
+	}
+	return nil, nil
+}
+
+func TestPIIRedactionFindsNames(t *testing.T) {
+	v := &fakeVault{}
+	req := request(t, `{"model":"m","messages":[{"role":"user","content":"Reject the loan of Jürgen Müller, juergen@example.de"}]}`)
+	d := PIIRedaction{Vault: v, Names: fakeNames{name: "Jürgen Müller"}}.Check(context.Background(), req)
+
+	if d.Action != pipeline.Modify || d.Reason != "redacted 1 EMAIL, 1 PERSON" {
+		t.Fatalf("decision = %+v", d)
+	}
+	if got := req.Messages[0].Text(); got != "Reject the loan of [PERSON_1], [EMAIL_1]" {
+		t.Errorf("text the model sees = %q", got)
+	}
+	if len(v.saved) != 2 || v.saved[0].Kind != pii.Person || v.saved[0].Value != "Jürgen Müller" {
+		t.Errorf("vault got %+v, want the name stored for later reveal or erasure", v.saved)
+	}
+}
+
+func TestPIIRedactionBlocksWhenNamesCantBeChecked(t *testing.T) {
+	req := request(t, `{"model":"m","messages":[{"role":"user","content":"Reject the loan of Jürgen Müller"}]}`)
+	d := PIIRedaction{Names: fakeNames{err: errors.New("ner sidecar down")}}.Check(context.Background(), req)
+	if d.Action != pipeline.Block {
+		t.Errorf("action = %s, want block: an unchecked name must not reach the model", d.Action)
+	}
+}
+
 func TestPolicyWithRealRules(t *testing.T) {
 	engine, err := policy.Load(context.Background(), "../../policies", slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {

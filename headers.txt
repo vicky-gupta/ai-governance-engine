@@ -1,17 +1,10 @@
 HTTP/1.1 403 Forbidden
 Content-Type: application/json
-X-Aigov-Approval-Id: 474fa53e-fd81-4448-98b4-547866b62a3c
-X-Aigov-Decision: hold
+X-Aigov-Decision: block
 X-Ratelimit-Limit: 10
-X-Ratelimit-Limit-Requests: 1000
-X-Ratelimit-Limit-Tokens: 8000
 X-Ratelimit-Remaining: 9
-X-Ratelimit-Remaining-Requests: 999
-X-Ratelimit-Remaining-Tokens: 7636
-X-Ratelimit-Reset: 1795443720
-X-Ratelimit-Reset-Requests: 1m26.4s
-X-Ratelimit-Reset-Tokens: 2.73s
-X-Request-Id: 5a67921e918c2c92addf5a39
-Date: Mon, 23 Nov 2026 14:21:34 GMT
-Content-Length: 300
+X-Ratelimit-Reset: 1795648200
+X-Request-Id: 94084e0f650eeee74aa9aa84
+Date: Wed, 25 Nov 2026 23:09:24 GMT
+Content-Length: 147
 

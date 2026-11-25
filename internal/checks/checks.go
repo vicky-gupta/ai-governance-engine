@@ -59,13 +59,17 @@ type Vault interface {
 // The decision's reason lists only what kinds were found, never the
 // values, so it is safe to log and audit.
 type PIIRedaction struct {
-	Vault Vault // optional
+	Vault Vault        // optional
+	Names pii.Detector // optional: finds names and places (the NER sidecar)
 }
 
 func (PIIRedaction) Name() string { return "pii_redaction" }
 
 func (c PIIRedaction) Check(ctx context.Context, req *pipeline.Request) pipeline.Decision {
 	r := pii.NewRedactor()
+	if c.Names != nil {
+		r.WithDetector(ctx, c.Names)
+	}
 	changed := false
 	for _, m := range req.Messages {
 		ch, err := m.MapText(r.Redact)
@@ -74,6 +78,11 @@ func (c PIIRedaction) Check(ctx context.Context, req *pipeline.Request) pipeline
 			return pipeline.Decision{Action: pipeline.Block, Reason: "could not inspect message content: " + err.Error()}
 		}
 		changed = changed || ch
+	}
+	if err := r.Err(); err != nil {
+		// Names and places could not be checked, so the request may still
+		// contain them. Same rule as above: what we can't check, we don't send.
+		return pipeline.Decision{Action: pipeline.Block, Reason: "names and places could not be checked: personal data check unavailable"}
 	}
 	if !changed {
 		return pipeline.Decision{Action: pipeline.Allow}
