@@ -28,6 +28,7 @@ import (
 	"github.com/vicky-gupta/ai-governance-engine/internal/policy"
 	"github.com/vicky-gupta/ai-governance-engine/internal/proxy"
 	"github.com/vicky-gupta/ai-governance-engine/internal/registry"
+	"github.com/vicky-gupta/ai-governance-engine/internal/report"
 	"github.com/vicky-gupta/ai-governance-engine/internal/server"
 	"github.com/vicky-gupta/ai-governance-engine/internal/toolguard"
 	"github.com/vicky-gupta/ai-governance-engine/internal/usage"
@@ -158,6 +159,8 @@ func run(log *slog.Logger) error {
 	adminAPI.Handle("/admin/", admin.New(store, auditLog, piiVault, usageStore, cfg.AdminToken, log))
 	adminAPI.Handle("/admin/reviewers", reviewerAdmin)
 	adminAPI.Handle("/admin/reviewers/", reviewerAdmin)
+	adminAPI.Handle("/admin/reports/", admin.RequireToken(cfg.AdminToken,
+		report.Handler(report.NewBuilder(pool, auditLog), auditLog, log)))
 
 	srv := &http.Server{
 		Addr: cfg.Addr,

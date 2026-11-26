@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Compliance evidence: {{.System.Name}}</title>
+<style>
+  body { font: 14px/1.5 system-ui, sans-serif; color: #111; max-width: 860px; margin: 32px auto; padding: 0 24px; }
+  h1 { font-size: 24px; margin: 0 0 4px; }
+  h2 { font-size: 16px; margin: 28px 0 8px; padding-bottom: 4px; border-bottom: 2px solid #111; }
+  .muted { color: #555; }
+  table { border-collapse: collapse; width: 100%; margin: 6px 0; }
+  th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid #ddd; vertical-align: top; }
+  th { background: #f4f4f4; font-weight: 600; }
+  th.n, td.n { text-align: right; font-variant-numeric: tabular-nums; }
+  .ok { color: #0a7d32; font-weight: 600; } .bad { color: #b3261e; font-weight: 600; }
+  code { font-size: 12px; word-break: break-all; }
+  .box { border: 1px solid #ccc; padding: 10px 12px; margin-top: 28px; font-size: 12px; }
+  @media print { body { margin: 0; } h2 { break-after: avoid; } table { break-inside: avoid; } }
+</style>
+</head>
+<body>
+<h1>Compliance evidence report</h1>
+<p class="muted">{{.System.Name}} · {{date .From}} to {{date .To}} (UTC, end exclusive) · generated {{.GeneratedAt.Format "2006-01-02 15:04 MST"}}</p>
+
+<h2>AI system</h2>
+<table>
+  <tr><th>Name</th><td>{{.System.Name}}</td><th>Risk tier (EU AI Act)</th><td>{{.System.RiskTier}}</td></tr>
+  <tr><th>Owner</th><td>{{.System.Owner}}</td><th>Status</th><td>{{.System.Status}}</td></tr>
+  <tr><th>Purpose</th><td colspan="3">{{.System.Purpose}}</td></tr>
+</table>
+
+<h2>Requests</h2>
+<p>{{.Requests.Total}} requests in the period.</p>
+<table>
+  <tr><th>Decision</th><th class="n">Requests</th></tr>
+  {{range $d, $n := .Requests.ByDecision}}<tr><td>{{$d}}</td><td class="n">{{$n}}</td></tr>{{end}}
+</table>
+{{if .Requests.StoppedBy}}
+<table>
+  <tr><th>Stopped by</th><th class="n">Requests</th></tr>
+  {{range .Requests.StoppedBy}}<tr><td>{{.Name}}</td><td class="n">{{.Count}}</td></tr>{{end}}
+</table>
+<table>
+  <tr><th>Most common reasons</th><th class="n">Requests</th></tr>
+  {{range .Requests.TopReasons}}<tr><td>{{.Name}}</td><td class="n">{{.Count}}</td></tr>{{end}}
+</table>
+{{end}}
+
+<h2>Personal data kept from the models</h2>
+<p>{{.PersonalData.RequestsRedacted}} requests contained personal data that was replaced by tokens before reaching a model.</p>
+{{if .PersonalData.ByKind}}<table>
+  <tr><th>Kind</th><th class="n">Values redacted</th></tr>
+  {{range $k, $n := .PersonalData.ByKind}}<tr><td>{{$k}}</td><td class="n">{{$n}}</td></tr>{{end}}
+</table>{{end}}
+
+<h2>Where requests were processed</h2>
+{{if .Routing}}<table>
+  <tr><th>Model</th><th>Provider</th><th>Region</th><th class="n">Requests</th></tr>
+  {{range .Routing}}<tr><td>{{.Model}}</td><td>{{.Provider}}</td><td>{{.Region}}</td><td class="n">{{.Requests}}</td></tr>{{end}}
+</table>{{else}}<p class="muted">No requests were forwarded.</p>{{end}}
+
+<h2>Answers and AI agent actions</h2>
+<table>
+  <tr><th>Check</th><th>Outcome</th><th class="n">Answers</th></tr>
+  {{range $a, $n := .Answers.ToolCalls}}<tr><td>Tool calls</td><td>{{$a}}</td><td class="n">{{$n}}</td></tr>{{end}}
+  {{range $a, $n := .Answers.Text}}<tr><td>Answer text</td><td>{{$a}}</td><td class="n">{{$n}}</td></tr>{{end}}
+</table>
+
+<h2>Human oversight</h2>
+{{if .Oversight.Approvals}}<table>
+  <tr><th>Approvals (kind: status)</th><th class="n">Count</th></tr>
+  {{range .Oversight.Approvals}}<tr><td>{{.Name}}</td><td class="n">{{.Count}}</td></tr>{{end}}
+</table>
+<p>Median time to a decision: {{or .Oversight.MedianToDecide "n/a"}}. Decisions in the audit log: {{.Oversight.DecisionsLogged}}.</p>
+<table>
+  <tr><th>Reviewer</th><th class="n">Approved</th><th class="n">Rejected</th></tr>
+  {{range .Oversight.Reviewers}}<tr><td>{{.Name}}</td><td class="n">{{.Approved}}</td><td class="n">{{.Rejected}}</td></tr>{{end}}
+</table>{{else}}<p class="muted">No requests were held for review.</p>{{end}}
+
+<h2>Usage</h2>
+<p>{{.Usage.TotalTokens}} tokens{{with .Usage.Budget}} (monthly budget: {{.}}){{end}}.</p>
+{{if .Usage.ByModel}}<table>
+  <tr><th>Model</th><th class="n">Requests</th><th class="n">Tokens</th></tr>
+  {{range .Usage.ByModel}}<tr><td>{{.Model}}</td><td class="n">{{.Requests}}</td><td class="n">{{.Tokens}}</td></tr>{{end}}
+</table>{{end}}
+
+<h2>Policy versions in force</h2>
+<p>{{range $i, $v := .PolicyVersions}}{{if $i}}, {{end}}<code>{{$v}}</code>{{else}}<span class="muted">none recorded</span>{{end}}</p>
+
+<h2>Audit log integrity</h2>
+<p>Hash chain: {{if .Integrity.ChainOK}}<span class="ok">intact</span>{{else}}<span class="bad">BROKEN</span> ({{.Integrity.Problem}}){{end}},
+  {{.Integrity.Checked}} entries checked; {{.Integrity.SystemEntries}} entries for this system in the period.</p>
+<p>Latest entry when this report was made: #{{.Integrity.HeadID}} <code>{{.Integrity.HeadHash}}</code></p>
+
+<h2>What this supports</h2>
+<table>
+  <tr><th>Regulation</th><th>Article</th><th>Topic</th><th>See</th></tr>
+  {{range .Evidence}}<tr><td>{{.Regulation}}</td><td>{{.Article}}</td><td>{{.Topic}}</td><td>{{.Section}}</td></tr>{{end}}
+</table>
+
+<div class="box">
+  <p><b>Report hash</b> <code>sha256:{{.Hash}}</code><br>
+  This hash is recorded in the gateway's audit log. To check a saved copy of this report, send its JSON to
+  <code>POST /admin/reports/verify</code>.</p>
+  <p class="muted">{{.Disclaimer}}</p>
+</div>
+</body>
+</html>
