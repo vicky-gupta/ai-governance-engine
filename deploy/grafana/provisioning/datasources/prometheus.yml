@@ -1,0 +1,11 @@
+# Grafana reads this at startup: Prometheus is the data source, with a
+# fixed uid so the dashboard can refer to it.
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false

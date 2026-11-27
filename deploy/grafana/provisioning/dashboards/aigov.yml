@@ -1,0 +1,9 @@
+# Load every dashboard JSON file in /etc/grafana/dashboards.
+apiVersion: 1
+providers:
+  - name: aigov
+    folder: AI Governance
+    type: file
+    allowUiUpdates: false
+    options:
+      path: /etc/grafana/dashboards

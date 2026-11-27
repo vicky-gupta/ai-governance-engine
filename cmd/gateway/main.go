@@ -212,8 +212,12 @@ func run(log *slog.Logger) error {
 	// it names every AI system and shows how much each one is used.
 	var metricsSrv *http.Server
 	if cfg.MetricsAddr != "off" {
+		if cfg.MetricsToken == "" && !metrics.IsLoopback(cfg.MetricsAddr) {
+			log.Warn("METRICS_ADDR is reachable from other machines and METRICS_TOKEN is not set: anyone who can reach it can read the metrics",
+				"addr", cfg.MetricsAddr)
+		}
 		mux := http.NewServeMux()
-		mux.Handle("GET /metrics", m.Handler())
+		mux.Handle("GET /metrics", metrics.RequireToken(cfg.MetricsToken, m.Handler()))
 		metricsSrv = &http.Server{Addr: cfg.MetricsAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 		go func() {
 			log.Info("metrics listening", "addr", cfg.MetricsAddr)

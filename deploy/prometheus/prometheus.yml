@@ -1,0 +1,19 @@
+# Prometheus scrapes the gateway's /metrics every 15 seconds and checks
+# the alert rules after each evaluation interval.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  - job_name: aigov
+    # The gateway runs on your machine (dev.ps1), not in Docker, so
+    # Prometheus reaches it through the host. If the gateway runs as a
+    # compose service later, change this to that service's name.
+    static_configs:
+      - targets: ["host.docker.internal:9091"]
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/metrics-token

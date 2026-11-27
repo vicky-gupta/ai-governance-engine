@@ -7,3 +7,5 @@ client.ps1
 test.py
 __pycache__/
 .pytest_cache/
+deploy/prometheus/metrics-token
+.env

@@ -9,6 +9,8 @@ package metrics
 
 import (
 	"context"
+	"crypto/subtle"
+	"net"
 	"net/http"
 	"strconv"
 	"time"
@@ -213,4 +215,37 @@ func (s *statusWriter) code() int {
 		return http.StatusOK
 	}
 	return s.status
+}
+
+// RequireToken protects /metrics with a bearer token when token is set.
+// Prometheus sends it with every scrape (authorization in its config).
+// Without a token, /metrics is open to anyone who can reach its port.
+func RequireToken(token string, next http.Handler) http.Handler {
+	if token == "" {
+		return next
+	}
+	want := []byte("Bearer " + token)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), want) != 1 {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="metrics"`)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// IsLoopback reports whether addr ("host:port") only accepts connections
+// from the same machine. ":9091" and "0.0.0.0:9091" accept them from
+// anywhere.
+func IsLoopback(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

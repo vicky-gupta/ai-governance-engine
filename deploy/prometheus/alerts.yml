@@ -1,0 +1,80 @@
+# Alert rules for the AI governance gateway. Each one says what is wrong
+# and what it means for compliance, not just which number crossed a line.
+groups:
+  - name: aigov
+    rules:
+      - alert: GatewayDown
+        expr: up{job="aigov"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The gateway's metrics can't be scraped"
+          description: "Either the gateway is down or Prometheus can't reach it. AI systems sending through it get no answers."
+
+      - alert: AuditLogWritesFailing
+        expr: increase(aigov_audit_write_failures_total[5m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Audit log writes are failing"
+          description: "{{ $value | humanize }} audit writes failed in the last 5 minutes. Every one is a request or response withheld: the gateway sends nothing it can't record."
+
+      - alert: RequiredDependencyDown
+        expr: aigov_dependency_up{required="true"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.dependency }} is down"
+          description: "Without {{ $labels.dependency }} the gateway blocks every request (it fails closed). /readyz answers 503."
+
+      - alert: RateLimitsNotEnforced
+        expr: aigov_dependency_up{dependency="redis"} == 0 or increase(aigov_ratelimit_fail_open_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Rate limits are not being enforced"
+          description: "Redis is unreachable, so requests pass without a rate limit check (the one check that fails open)."
+
+      - alert: ApprovalsWaiting
+        expr: aigov_approvals_pending > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} held request(s) waiting for a reviewer for 30 minutes"
+          description: "Human oversight is waiting. Held requests expire if nobody decides in time, and the AI system can't continue until then."
+
+      - alert: ProviderErrors
+        expr: |
+          sum by (provider) (rate(aigov_upstream_responses_total{code=~"5.."}[5m]))
+            / sum by (provider) (rate(aigov_upstream_responses_total[5m])) > 0.10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.provider }}: {{ $value | humanizePercentage }} of responses are errors"
+          description: "More than 10% of responses from {{ $labels.provider }} were 5xx errors over 5 minutes."
+
+      - alert: HighBlockRate
+        expr: |
+          sum by (ai_system) (increase(aigov_decisions_total{action="block"}[15m]))
+            / sum by (ai_system) (increase(aigov_decisions_total[15m])) > 0.5
+          and sum by (ai_system) (increase(aigov_decisions_total[15m])) >= 20
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.ai_system }}: more than half of its decisions are blocks"
+          description: "Either the AI system is misbehaving (or being misused), or a policy change is too strict. Check the audit log."
+
+      - alert: ChecksSlow
+        expr: |
+          histogram_quantile(0.95, sum by (le, check) (rate(aigov_check_duration_seconds_bucket[5m]))) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The {{ $labels.check }} check takes over 1s (p95)"
+          description: "Governance checks add this delay to every request. For pii_redaction, look at the NER sidecar."
