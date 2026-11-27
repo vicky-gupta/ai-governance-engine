@@ -1,0 +1,158 @@
+# Unit tests for the alert rules: promtool test rules alerts_test.yml
+# Each test feeds made-up series and says which alerts must fire when.
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  # Audit writes start failing at minute 5: the alert fires at once, no waiting.
+  - interval: 1m
+    input_series:
+      - series: 'aigov_audit_write_failures_total{job="aigov"}'
+        values: '0x5 1 2 3'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: AuditLogWritesFailing
+        exp_alerts: []
+      - eval_time: 7m
+        alertname: AuditLogWritesFailing
+        exp_alerts:
+          - exp_labels: { severity: critical, job: aigov }
+            exp_annotations:
+              summary: "Audit log writes are failing"
+              description: "2 audit writes failed in the last 5 minutes. Every one is a request or response withheld: the gateway sends nothing it can't record."
+
+  # NER goes down at minute 3. A blip shorter than a minute must not page;
+  # down for longer must.
+  - interval: 1m
+    input_series:
+      - series: 'aigov_dependency_up{dependency="ner",required="true"}'
+        values: '1 1 1 0 0 0 0'
+      - series: 'aigov_dependency_up{dependency="redis",required="false"}'
+        values: '0 0 0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: RequiredDependencyDown
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: RequiredDependencyDown
+        exp_alerts:
+          - exp_labels: { severity: critical, dependency: ner, required: "true" }
+            exp_annotations:
+              summary: "ner is down"
+              description: "Without ner the gateway blocks every request (it fails closed). /readyz answers 503."
+
+  # Redis (optional) down only warns, after 5 minutes, through its own alert.
+  - interval: 1m
+    input_series:
+      - series: 'aigov_dependency_up{dependency="redis",required="false"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: RequiredDependencyDown
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: RateLimitsNotEnforced
+        exp_alerts:
+          - exp_labels: { severity: warning, dependency: redis, required: "false" }
+            exp_annotations:
+              summary: "Rate limits are not being enforced"
+              description: "Redis is unreachable, so requests pass without a rate limit check (the one check that fails open)."
+
+  # Approvals waiting for 30 minutes.
+  - interval: 5m
+    input_series:
+      - series: 'aigov_approvals_pending'
+        values: '0 2 2 2 2 2 2 2 2'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: ApprovalsWaiting
+        exp_alerts: []
+      - eval_time: 40m
+        alertname: ApprovalsWaiting
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "2 held request(s) waiting for a reviewer for 30 minutes"
+              description: "Human oversight is waiting. Held requests expire if nobody decides in time, and the AI system can't continue until then."
+
+  # Blocks: a busy system blocking most requests alerts; a quiet one doesn't.
+  - interval: 1m
+    input_series:
+      - series: 'aigov_decisions_total{ai_system="support-bot",check="policy",action="block"}'
+        values: '0+3x20'
+      - series: 'aigov_decisions_total{ai_system="support-bot",check="pipeline",action="allow"}'
+        values: '0+1x20'
+      - series: 'aigov_decisions_total{ai_system="loan-agent",check="policy",action="block"}'
+        values: '0+0.2x20'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: HighBlockRate
+        exp_alerts:
+          - exp_labels: { severity: warning, ai_system: support-bot }
+            exp_annotations:
+              summary: "support-bot: more than half of its decisions are blocks"
+              description: "Either the AI system is misbehaving (or being misused), or a policy change is too strict. Check the audit log."
+
+  # The gateway stops answering scrapes: down for a minute pages.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="aigov",instance="host.docker.internal:9091"}'
+        values: '1 1 0 0 0'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: GatewayDown
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: GatewayDown
+        exp_alerts:
+          - exp_labels: { severity: critical, job: aigov, instance: "host.docker.internal:9091" }
+            exp_annotations:
+              summary: "The gateway's metrics can't be scraped"
+              description: "Either the gateway is down or Prometheus can't reach it. AI systems sending through it get no answers."
+
+  # 20% of groq's responses are 5xx for over 5 minutes; mistral is fine.
+  - interval: 1m
+    input_series:
+      - series: 'aigov_upstream_responses_total{provider="groq",code="200"}'
+        values: '0+8x20'
+      - series: 'aigov_upstream_responses_total{provider="groq",code="502"}'
+        values: '0+2x20'
+      - series: 'aigov_upstream_responses_total{provider="mistral",code="200"}'
+        values: '0+10x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: ProviderErrors
+        exp_alerts:
+          - exp_labels: { severity: warning, provider: groq }
+            exp_annotations:
+              summary: "groq: 20% of responses are errors"
+              description: "More than 10% of responses from groq were 5xx errors over 5 minutes."
+
+  # pii_redaction takes about 2s per request for 10+ minutes; policy stays fast.
+  - interval: 1m
+    input_series:
+      - series: 'aigov_check_duration_seconds_bucket{check="pii_redaction",le="1"}'
+        values: '0x20'
+      - series: 'aigov_check_duration_seconds_bucket{check="pii_redaction",le="2.5"}'
+        values: '0+10x20'
+      - series: 'aigov_check_duration_seconds_bucket{check="pii_redaction",le="+Inf"}'
+        values: '0+10x20'
+      - series: 'aigov_check_duration_seconds_bucket{check="policy",le="0.001"}'
+        values: '0+10x20'
+      - series: 'aigov_check_duration_seconds_bucket{check="policy",le="1"}'
+        values: '0+10x20'
+      - series: 'aigov_check_duration_seconds_bucket{check="policy",le="+Inf"}'
+        values: '0+10x20'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: ChecksSlow
+        exp_alerts: []
+      - eval_time: 18m
+        alertname: ChecksSlow
+        exp_alerts:
+          - exp_labels: { severity: warning, check: pii_redaction }
+            exp_annotations:
+              summary: "The pii_redaction check takes over 1s (p95)"
+              description: "Governance checks add this delay to every request. For pii_redaction, look at the NER sidecar."
