@@ -41,11 +41,12 @@ func Middleware(rec Recorder, log *slog.Logger) func(http.Handler) http.Handler 
 				return
 			}
 			record := Record{
-				RequestID: pipeline.RequestIDFrom(r),
-				SystemID:  sys.ID,
-				Model:     model,
-				Provider:  pipeline.ProviderFrom(r),
-				Usage:     u,
+				RequestID:  pipeline.RequestIDFrom(r),
+				SystemID:   sys.ID,
+				SystemName: sys.Name,
+				Model:      model,
+				Provider:   pipeline.ProviderFrom(r),
+				Usage:      u,
 			}
 			// The response is already with the caller, who may have hung up,
 			// which cancels r.Context(). The record must still be written.

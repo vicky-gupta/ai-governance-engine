@@ -1,25 +1,21 @@
 package server
 
 import (
-	"context"
-	"errors"
+	"bytes"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 )
-
-// fakeDB lets tests choose whether the database is "up".
-type fakeDB struct{ err error }
-
-func (f fakeDB) Ping(context.Context) error { return f.err }
 
 // testDeps returns working defaults; each test overrides what it needs.
 func testDeps() Deps {
 	return Deps{
 		Log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
-		DB:     fakeDB{},
+		Ready:  http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}),
 		Chat:   http.NotFoundHandler(),
 		Models: http.NotFoundHandler(),
 		Admin:  http.NotFoundHandler(),
@@ -35,19 +31,46 @@ func TestHealthz(t *testing.T) {
 	}
 }
 
-func TestReadyz(t *testing.T) {
+// Every request is reported with the matched route, never the raw path,
+// and logged with its status and request ID.
+func TestObserveAndLog(t *testing.T) {
+	type seen struct {
+		route  string
+		status int
+	}
+	var got []seen
+	var logs bytes.Buffer
 	deps := testDeps()
-	rec := httptest.NewRecorder()
-	New(deps).Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/readyz", nil))
-	if rec.Code != http.StatusOK {
-		t.Errorf("db up: got %d, want 200", rec.Code)
+	deps.Log = slog.New(slog.NewTextHandler(&logs, nil))
+	deps.Chat = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Request-ID", "req-123")
+		w.WriteHeader(http.StatusForbidden)
+	})
+	deps.Observe = func(route string, status int, _ time.Duration) { got = append(got, seen{route, status}) }
+	h := New(deps).Handler()
+
+	for _, req := range []*http.Request{
+		httptest.NewRequest("POST", "/v1/chat/completions", nil),
+		httptest.NewRequest("GET", "/wp-admin/setup.php", nil),
+		httptest.NewRequest("GET", "/healthz", nil),
+	} {
+		h.ServeHTTP(httptest.NewRecorder(), req)
 	}
 
-	deps.DB = fakeDB{err: errors.New("connection refused")}
-	rec = httptest.NewRecorder()
-	New(deps).Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/readyz", nil))
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Errorf("db down: got %d, want 503", rec.Code)
+	want := []seen{{"POST /v1/chat/completions", 403}, {"", 404}, {"GET /healthz", 200}}
+	if len(got) != len(want) {
+		t.Fatalf("observed %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("observed[%d] = %v, want %v", i, got[i], want[i])
+		}
+	}
+	if !strings.Contains(logs.String(), "status=403") || !strings.Contains(logs.String(), "request_id=req-123") {
+		t.Errorf("log line misses status or request ID:\n%s", logs.String())
+	}
+	if strings.Contains(logs.String(), "/healthz") {
+		t.Error("health checks should not be logged")
 	}
 }
 

@@ -18,10 +18,11 @@ type Usage struct {
 
 // Record is one metered request.
 type Record struct {
-	RequestID string
-	SystemID  string
-	Model     string
-	Provider  string
+	RequestID  string
+	SystemID   string
+	SystemName string // not stored (the ID is); for logs and metrics
+	Model      string
+	Provider   string
 	Usage
 	CreatedAt time.Time
 }

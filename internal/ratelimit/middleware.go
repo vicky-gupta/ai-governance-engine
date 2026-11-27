@@ -17,7 +17,9 @@ type Limiter struct {
 	Counter    Counter
 	DefaultRPM int // for systems without their own limit
 	Log        *slog.Logger
-	Now        func() time.Time // nil means time.Now; tests set a fixed clock
+	Now        func() time.Time      // nil means time.Now; tests set a fixed clock
+	FailOpen   func(aiSystem string) // optional: called when a request skips the limit
+
 }
 
 // Middleware rejects requests over the limit with 429 Too Many Requests.
@@ -46,6 +48,9 @@ func (l *Limiter) Middleware(next http.Handler) http.Handler {
 			// offline, and say so loudly in the logs.
 			l.Log.Warn("ratelimit: counter unavailable, request allowed without a limit check",
 				"ai_system", sys.Name, "error", err)
+			if l.FailOpen != nil {
+				l.FailOpen(sys.Name)
+			}
 			next.ServeHTTP(w, r)
 			return
 		}

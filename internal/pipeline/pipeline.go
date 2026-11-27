@@ -49,11 +49,18 @@ type Result struct {
 
 // Pipeline runs checks in order.
 type Pipeline struct {
-	checks []Check
+	checks  []Check
+	observe func(Step) // optional: called after every check, for metrics
 }
 
 func New(checks ...Check) *Pipeline {
 	return &Pipeline{checks: checks}
+}
+
+// Observe calls f after every check with what it decided and how long it
+// took. Set it before the pipeline is used.
+func (p *Pipeline) Observe(f func(Step)) {
+	p.observe = f
 }
 
 // Run applies every check in order.
@@ -65,9 +72,11 @@ func (p *Pipeline) Run(ctx context.Context, req *Request) Result {
 	for _, c := range p.checks {
 		start := time.Now()
 		d := safeCheck(ctx, c, req)
-		res.Trace = append(res.Trace, Step{
-			Check: c.Name(), Action: d.Action, Reason: d.Reason, Duration: time.Since(start),
-		})
+		step := Step{Check: c.Name(), Action: d.Action, Reason: d.Reason, Duration: time.Since(start)}
+		res.Trace = append(res.Trace, step)
+		if p.observe != nil {
+			p.observe(step)
+		}
 
 		switch d.Action {
 		case Block, Hold:

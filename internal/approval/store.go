@@ -120,6 +120,18 @@ func (s *Store) List(ctx context.Context, status Status) ([]Approval, error) {
 	return out, rows.Err()
 }
 
+// CountPending returns how many approvals wait for a reviewer and can
+// still be decided (not expired). It is the same set List(Pending) shows.
+func (s *Store) CountPending(ctx context.Context) (int, error) {
+	var n int
+	err := s.pool.QueryRow(ctx,
+		"SELECT count(*) FROM approvals WHERE status = 'pending' AND expires_at > now()").Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("approval: count pending: %w", err)
+	}
+	return n, nil
+}
+
 // Decide approves or rejects a pending approval. seenHash must be the
 // content_hash of what the reviewer looked at, which proves the decision
 // is about that content.

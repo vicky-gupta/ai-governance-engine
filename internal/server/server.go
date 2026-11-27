@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -10,20 +9,18 @@ import (
 
 var Version = "dev"
 
-// Pinger is anything that can check the database connection.
-// *pgxpool.Pool implements it.
-type Pinger interface {
-	Ping(ctx context.Context) error
-}
-
 // Deps holds everything the server needs.
 type Deps struct {
 	Log    *slog.Logger
-	DB     Pinger       // used by /readyz
+	Ready  http.Handler // GET /readyz: are the dependencies up?
 	Chat   http.Handler // POST /v1/chat/completions: auth + pipeline + proxy
 	Models http.Handler // GET /v1/models: auth + proxy
 	Admin  http.Handler // the /admin API
 	Review http.Handler // the /review API for human reviewers
+
+	// Observe, if set, is called after every request (for metrics).
+	// route is the pattern that matched, or "" if none did.
+	Observe func(route string, status int, d time.Duration)
 }
 
 type Server struct {
@@ -37,7 +34,7 @@ func New(deps Deps) *Server {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)
-	mux.HandleFunc("GET /readyz", s.handleReady)
+	mux.Handle("GET /readyz", s.deps.Ready)
 	mux.HandleFunc("GET /version", s.handleVersion)
 
 	// OpenAI-compatible routes. Only these are forwarded; anything
@@ -60,23 +57,63 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"version": Version})
 }
 
-// Can we serve traffic? (Can we query the database?)
-func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
-	defer cancel()
-	if err := s.deps.DB.Ping(ctx); err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "not ready", "database": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ready", "database": "ok"})
-}
-
+// logRequests logs every request with its status and request ID, so a
+// log line can be matched to its audit entry, and reports it to Observe.
 func (s *Server) logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		next.ServeHTTP(w, r)
-		s.deps.Log.Info("request", "method", r.Method, "path", r.URL.Path, "duration", time.Since(start))
+		sw := &statusWriter{ResponseWriter: w}
+		next.ServeHTTP(sw, r)
+		d := time.Since(start)
+
+		// The mux sets r.Pattern on this same request when a route
+		// matches. Health checks are polled constantly; they are counted
+		// but not logged.
+		if r.Pattern != "GET /healthz" && r.Pattern != "GET /readyz" {
+			s.deps.Log.Info("request",
+				"method", r.Method,
+				"path", r.URL.Path,
+				"route", r.Pattern,
+				"status", sw.code(),
+				"duration_ms", d.Milliseconds(),
+				"request_id", w.Header().Get("X-Request-Id"), // set by the pipeline, if it ran
+			)
+		}
+		if s.deps.Observe != nil {
+			s.deps.Observe(r.Pattern, sw.code(), d)
+		}
 	})
+}
+
+// statusWriter remembers the status code. It passes Flush on, so
+// streamed responses still stream.
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (s *statusWriter) WriteHeader(code int) {
+	if s.status == 0 {
+		s.status = code
+	}
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *statusWriter) Write(p []byte) (int, error) {
+	if s.status == 0 {
+		s.status = http.StatusOK
+	}
+	return s.ResponseWriter.Write(p)
+}
+
+func (s *statusWriter) Flush()                      { http.NewResponseController(s.ResponseWriter).Flush() }
+func (s *statusWriter) Unwrap() http.ResponseWriter { return s.ResponseWriter }
+
+func (s *statusWriter) code() int {
+	if s.status == 0 {
+		return http.StatusOK
+	}
+	return s.status
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

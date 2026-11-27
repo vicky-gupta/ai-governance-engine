@@ -19,6 +19,7 @@ type Config struct {
 	DefaultRPM    int           // requests per minute for systems without their own limit
 	ApprovalTTL   time.Duration // how long a held request can be approved and used
 	NERURL        string        // the NER sidecar for names and places; empty: not used
+	MetricsAddr   string        // where /metrics is served; "off" turns it off
 }
 
 func Load() (Config, error) {
@@ -30,6 +31,7 @@ func Load() (Config, error) {
 		AdminToken:    os.Getenv("ADMIN_TOKEN"),
 		RedisURL:      getEnv("REDIS_URL", "redis://localhost:6379/0"),
 		NERURL:        os.Getenv("NER_URL"),
+		MetricsAddr:   getEnv("METRICS_ADDR", "127.0.0.1:9091"),
 	}
 
 	rpm, err := strconv.Atoi(getEnv("DEFAULT_RATE_LIMIT_RPM", "60"))

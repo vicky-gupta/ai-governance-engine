@@ -334,3 +334,24 @@ func TestToolCallApprovalRace(t *testing.T) {
 		t.Errorf("the approved answer was handed out %d times, want exactly 1", handedOut)
 	}
 }
+
+// CountPending counts what a reviewer can still decide: not expired, not
+// yet decided.
+func TestCountPending(t *testing.T) {
+	s, pool := testStore(t, time.Hour)
+	ctx := context.Background()
+	before, err := s.CountPending(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Open(ctx, held(t, pool))
+	id, _ := s.Open(ctx, held(t, pool))
+	pool.Exec(ctx, "UPDATE approvals SET status = 'rejected' WHERE id = $1", id)
+
+	expired, _ := testStore(t, -time.Minute)
+	expired.Open(ctx, held(t, pool))
+
+	if after, _ := s.CountPending(ctx); after != before+1 {
+		t.Errorf("pending = %d, want %d", after, before+1)
+	}
+}
